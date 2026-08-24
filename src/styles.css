@@ -645,7 +645,7 @@ p {
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   margin-bottom: 20px;
 }
 
