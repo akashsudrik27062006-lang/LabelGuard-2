@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { 
@@ -8,6 +9,15 @@ import {
   MessageSquare, ArrowLeftRight, ShieldAlert, PhoneCall, AlertCircle
 } from 'lucide-react';
 import './styles.css';
+import { supabase } from './lib/supabase';
+import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl } from './lib/api';
+
+type DbProfile = {
+  id: string;
+  full_name: string;
+  role: 'MANUFACTURER' | 'OFFICER' | 'SELLER' | 'CONSUMER';
+  organization_id: string | null;
+};
 
 type Role = 'officer' | 'manufacturer' | 'seller' | 'consumer';
 type Status = 'COMPLIANT' | 'WARNING' | 'NON_COMPLIANT' | 'INSPECTOR_CONFIRMED_NON_COMPLIANT' | 'UNDER_REINSPECTION';
@@ -16,6 +26,7 @@ type Confidence = Record<string, number>;
 type RuleRef = { law: string; section: string; url: string };
 
 type RuleViolation = {
+  dbId?: string;
   requirement: string;
   section: string;
   status: 'PASSED' | 'MALFORMED' | 'MISSING';
@@ -41,6 +52,7 @@ type Product = {
 
 type Result = { 
   id: string; 
+  dbScanId?: string;
   product: Product; 
   score: number; 
   status: Status; 
@@ -55,12 +67,19 @@ type Result = {
 
 type Complaint = {
   id: string;
+  dbId?: string;
+  productId?: string | null;
+  scanId?: string | null;
   productName: string;
   brand: string;
   category: string;
   issueType: string;
   description: string;
   status: 'SUBMITTED' | 'UNDER_INVESTIGATION' | 'RESOLVED';
+  outcome?: 'CONFIRMED' | 'REJECTED' | null;
+  officerRemarks?: string | null;
+  amountCharged?: number | null;
+  mrp?: number | null;
   date: string;
   assignedOfficer?: string;
   evidenceImage?: string;
@@ -248,10 +267,10 @@ const labels: Record<Role, string> = {
 };
 
 const creds: Record<Role, { email: string; password: string; name: string }> = {
-  officer: { email: 'officer@labelguard.demo', password: 'officer123', name: 'Ananya Sharma (Insp. ID: LMO-441)' },
-  manufacturer: { email: 'manufacturer@labelguard.demo', password: 'manufacturer123', name: 'ABC Foods Quality Desk' },
-  seller: { email: 'seller@labelguard.demo', password: 'seller123', name: 'Marketplace Seller Desk' },
-  consumer: { email: 'consumer@labelguard.demo', password: 'consumer123', name: 'Rahul Verma' },
+  officer: { email: 'thombreomkar098+officer@gmail.com', password: 'Demo@Officer123', name: 'Ananya Sharma (Insp. ID: LMO-441)' },
+  manufacturer: { email: 'thombreomkar098+manufacturer@gmail.com', password: 'Demo@Manufacturer123', name: 'ABC Foods Quality Desk' },
+  seller: { email: 'thombreomkar098+seller@gmail.com', password: 'Demo@Seller123', name: 'Marketplace Seller Desk' },
+  consumer: { email: 'thombreomkar098+consumer@gmail.com', password: 'Demo@Consumer123', name: 'Rahul Verma' },
 };
 
 const ruleSummaries = [
@@ -398,38 +417,48 @@ const SCAN_STEPS = [
 ];
 
 function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
-  const [product, setProduct] = useState(products[role === 'manufacturer' ? 0 : role === 'seller' ? 1 : 1]);
   const [file, setFile] = useState<string>();
+  const [fileObj, setFileObj] = useState<File>();
+  const [productName, setProductName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState(0);
+  const [statusMsg, setStatusMsg] = useState('');
 
-  const analyze = () => {
-    if (!file) return alert('Please upload a product packaging image.');
-    setLoading(true); 
-    setStep(0);
-    let i = 0;
-    const t = setInterval(() => {
-      i++;
-      if (i === SCAN_STEPS.length) { 
-        clearInterval(t); 
-        done(makeMockResult(product)); 
-      } else {
-        setStep(i);
-      }
-    }, 320);
+  const analyze = async () => {
+    if (!fileObj) return alert('Please upload a product packaging image.');
+    if (!productName.trim()) return alert('Please enter a product name.');
+    setLoading(true);
+    setStatusMsg('Uploading image and running AI analysis (this can take 10-20 seconds)...');
+    try {
+      const { scanId } = await startScan({
+        imageFile: fileObj,
+        productName: productName.trim(),
+        category: 'Packaged food',
+        scanType: role.toUpperCase() as 'OFFICER' | 'MANUFACTURER' | 'SELLER' | 'CONSUMER'
+      });
+      const backendResult = await getScanResult(scanId);
+      const uiResult = mapToUiResult(backendResult);
+      done(uiResult as unknown as Result);
+    } catch (e) {
+      alert('Scan failed: ' + ((e as Error).message || 'Unknown error'));
+    } finally {
+      setLoading(false);
+    }
   };
-
-  const progress = loading ? Math.round(((step + 1) / SCAN_STEPS.length) * 100) : 0;
 
   return (
     <section className="scanner">
       <div className="sample-picker">
-        <b>Select Demo Scenario:</b>
-        {products.map(p => (
-          <button key={p.id} onClick={() => setProduct(p)} className={p.id === product.id ? 'active' : ''}>
-            {p.image} {p.name}
-          </button>
-        ))}
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '360px' }}>
+          <b>Product Name</b>
+          <input
+            type="text"
+            placeholder="e.g. Amul Ghee 500g"
+            value={productName}
+            onChange={e => setProductName(e.target.value)}
+            disabled={loading}
+            style={{ padding: '10px 12px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}
+          />
+        </label>
       </div>
       <label className="dropzone">
         <input 
@@ -438,7 +467,7 @@ function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
           accept="image/*" 
           onChange={e => { 
             const f = e.target.files?.[0]; 
-            if (f) setFile(URL.createObjectURL(f)); 
+            if (f) { setFile(URL.createObjectURL(f)); setFileObj(f); }
           }} 
           disabled={loading} 
         />
@@ -448,20 +477,20 @@ function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
           <>
             <Upload size={32} />
             <b>Upload product label or Principal Display Panel</b>
-            <span>Supported formats: JPG, PNG, WEBP (Simulated OCR)</span>
+            <span>Supported formats: JPG, PNG, WEBP (real AI analysis)</span>
           </>
         )}
         {loading && (
           <div className="scan-overlay">
-            <ScanGauge progress={progress} />
-            <b>{SCAN_STEPS[step]}</b>
+            <ScanGauge progress={60} />
+            <b>{statusMsg}</b>
             <span>Evaluating against statutory Legal Metrology rules</span>
           </div>
         )}
       </label>
       {file && (
         <div className="scan-actions">
-          <button className="btn outline" onClick={() => setFile(undefined)} disabled={loading}>Remove Image</button>
+          <button className="btn outline" onClick={() => { setFile(undefined); setFileObj(undefined); }} disabled={loading}>Remove Image</button>
           <button className="btn primary" onClick={analyze} disabled={loading}>
             {loading ? <RefreshCw className="spin" size={16} /> : <Camera size={16} />} 
             {loading ? 'Analyzing...' : role === 'consumer' ? 'Check Product' : 'Run Compliance Scan'}
@@ -474,6 +503,21 @@ function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
 
 function OfficerDashboard({ onNewScan }: { onNewScan: () => void }) {
   const nav = useNavigate();
+  const [stats, setStats] = useState({ totalScans: 0, compliant: 0, nonCompliant: 0, review: 0, pendingComplaints: 0, confirmedViolations: 0 });
+  const [recentScans, setRecentScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
+  const [loading, setLoading] = useState(true);
+
+  React.useEffect(() => {
+    Promise.all([getDashboardStats(), listRealScans()])
+      .then(([s, scans]) => { setStats(s); setRecentScans(scans.slice(0, 3)); })
+      .catch(e => alert('Failed to load dashboard: ' + (e as Error).message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const compliantPct = stats.totalScans > 0 ? Math.round((stats.compliant / stats.totalScans) * 100) : 0;
+  const nonCompliantPct = stats.totalScans > 0 ? Math.round((stats.nonCompliant / stats.totalScans) * 100) : 0;
+  const reviewPct = stats.totalScans > 0 ? Math.round((stats.review / stats.totalScans) * 100) : 0;
+
   return (
     <>
       <div className="page-title">
@@ -486,38 +530,47 @@ function OfficerDashboard({ onNewScan }: { onNewScan: () => void }) {
       </div>
 
       <div className="stats">
-        <article><b className="num">142</b><span>Total Inspections</span></article>
-        <article><b className="num" style={{ color: 'var(--status-bad)' }}>38</b><span>Confirmed Violations</span></article>
-        <article><b className="num" style={{ color: 'var(--status-warn)' }}>12</b><span>Under Re-inspection</span></article>
-        <article><b className="num" style={{ color: 'var(--brand-primary)' }}>18</b><span>Pending Complaints</span></article>
+        <article><b className="num">{stats.totalScans}</b><span>Total Inspections</span></article>
+        <article><b className="num" style={{ color: 'var(--status-bad)' }}>{stats.confirmedViolations}</b><span>Confirmed Violations</span></article>
+        <article><b className="num" style={{ color: 'var(--status-warn)' }}>{stats.review}</b><span>Under Re-inspection</span></article>
+        <article><b className="num" style={{ color: 'var(--brand-primary)' }}>{stats.pendingComplaints}</b><span>Pending Complaints</span></article>
       </div>
 
       <div className="dashboard-grid">
         <section className="panel">
           <h2>Statutory Compliance Distribution</h2>
-          <div className="bars">
-            <p><span>Compliant</span><i style={{ width: '64%' }}></i><b className="num">64%</b></p>
-            <p><span>Non-Compliant</span><i className="redbar" style={{ width: '27%' }}></i><b className="num">27%</b></p>
-            <p><span>Warnings / Re-inspect</span><i className="amberbar" style={{ width: '9%' }}></i><b className="num">9%</b></p>
-          </div>
+          {stats.totalScans === 0 ? (
+            <p>No scans yet.</p>
+          ) : (
+            <div className="bars">
+              <p><span>Compliant</span><i style={{ width: compliantPct + '%' }}></i><b className="num">{compliantPct}%</b></p>
+              <p><span>Non-Compliant</span><i className="redbar" style={{ width: nonCompliantPct + '%' }}></i><b className="num">{nonCompliantPct}%</b></p>
+              <p><span>Warnings / Re-inspect</span><i className="amberbar" style={{ width: reviewPct + '%' }}></i><b className="num">{reviewPct}%</b></p>
+            </div>
+          )}
         </section>
 
         <section className="panel">
           <h2>Enforcement Action Queue</h2>
-          <div className="alert" style={{ background: 'var(--status-bad-bg)', border: '1px solid var(--status-bad-border)' }}>
-            <AlertTriangle size={18} color="var(--status-bad)" />
-            <div>
-              <strong style={{ color: 'var(--status-bad)', display: 'block' }}>Mandatory Review Required</strong>
-              <span>Missing MRP detected on Golden Crunch Biscuits (Super Mart Noida).</span>
+          {stats.pendingComplaints > 0 && (
+            <div className="alert" style={{ background: 'var(--status-bad-bg)', border: '1px solid var(--status-bad-border)' }}>
+              <AlertTriangle size={18} color="var(--status-bad)" />
+              <div>
+                <strong style={{ color: 'var(--status-bad)', display: 'block' }}>Complaints Awaiting Review</strong>
+                <span>{stats.pendingComplaints} consumer complaint(s) need investigation.</span>
+              </div>
             </div>
-          </div>
-          <div className="alert">
-            <CheckCircle2 size={18} color="var(--status-good)" />
-            <div>
-              <strong style={{ display: 'block' }}>Re-inspection Verification Completed</strong>
-              <span>ABC Foods updated Net Qty symbol on Basmati Rice batch.</span>
+          )}
+          {stats.review > 0 && (
+            <div className="alert">
+              <CheckCircle2 size={18} color="var(--status-good)" />
+              <div>
+                <strong style={{ display: 'block' }}>Scans Under Re-inspection</strong>
+                <span>{stats.review} scan(s) flagged for follow-up verification.</span>
+              </div>
             </div>
-          </div>
+          )}
+          {stats.pendingComplaints === 0 && stats.review === 0 && <p>No pending actions.</p>}
         </section>
       </div>
 
@@ -526,22 +579,28 @@ function OfficerDashboard({ onNewScan }: { onNewScan: () => void }) {
           <h2>Recent Field Inspections</h2>
           <button className="linkbtn" onClick={() => nav('/app/history')}>View Complete Register <ArrowRight size={14} /></button>
         </div>
-        <table>
-          <thead>
-            <tr><th>Inspection ID</th><th>Product</th><th>Manufacturer</th><th>Status</th><th>Violations</th></tr>
-          </thead>
-          <tbody>
-            {products.slice(0, 3).map(p => (
-              <tr key={p.id}>
-                <td className="num">INSP-{(p.id === 'rice' ? '9012' : p.id === 'oil' ? '4410' : '3129')}</td>
-                <td>{p.image} {p.name}</td>
-                <td>{p.manufacturer}</td>
-                <td><span className={'badge ' + cls(p.status)}>{p.status.replace(/_/g, ' ')}</span></td>
-                <td className="num">{mockViolations(p).length}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {loading ? (
+          <p>Loading...</p>
+        ) : recentScans.length === 0 ? (
+          <p>No inspections yet.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Inspection ID</th><th>Product</th><th>Manufacturer</th><th>Status</th><th>Violations</th></tr>
+            </thead>
+            <tbody>
+              {recentScans.map(r => (
+                <tr key={r.scanId}>
+                  <td className="num">{r.id}</td>
+                  <td>📦 {r.productName}</td>
+                  <td>{r.manufacturer}</td>
+                  <td><span className={'badge ' + cls(r.status as Status)}>{r.status.replace(/_/g, ' ')}</span></td>
+                  <td className="num">{r.violationCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
     </>
   );
@@ -549,12 +608,24 @@ function OfficerDashboard({ onNewScan }: { onNewScan: () => void }) {
 
 function OfficerInspectionResult({ result, onUpdateStatus }: { result: Result; onUpdateStatus: (newStatus: Status) => void }) {
   const [violationsState, setViolationsState] = useState<RuleViolation[]>(result.violations);
+  const [savingIdx, setSavingIdx] = useState<number>();
   const nav = useNavigate();
 
-  const handleDecision = (idx: number, decision: 'VERIFIED' | 'REJECTED') => {
-    const updated = [...violationsState];
-    updated[idx].officerDecision = decision;
-    setViolationsState(updated);
+  const handleDecision = async (idx: number, decision: 'VERIFIED' | 'REJECTED') => {
+    const violation = violationsState[idx];
+    setSavingIdx(idx);
+    try {
+      if (violation.dbId) {
+        await updateViolationDecision(violation.dbId, decision);
+      }
+      const updated = [...violationsState];
+      updated[idx] = { ...updated[idx], officerDecision: decision };
+      setViolationsState(updated);
+    } catch (e) {
+      alert('Failed to save decision: ' + (e as Error).message);
+    } finally {
+      setSavingIdx(undefined);
+    }
   };
 
   return (
@@ -597,8 +668,12 @@ function OfficerInspectionResult({ result, onUpdateStatus }: { result: Result; o
                   </span>
                 ) : (
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn outline" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => handleDecision(idx, 'REJECTED')}>Reject Finding</button>
-                    <button className="btn primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => handleDecision(idx, 'VERIFIED')}>Verify Finding</button>
+                    <button className="btn outline" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => handleDecision(idx, 'REJECTED')} disabled={savingIdx === idx}>
+                      {savingIdx === idx ? 'Saving...' : 'Reject Finding'}
+                    </button>
+                    <button className="btn primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => handleDecision(idx, 'VERIFIED')} disabled={savingIdx === idx}>
+                      {savingIdx === idx ? 'Saving...' : 'Verify Finding'}
+                    </button>
                   </div>
                 )}
               </div>
@@ -676,45 +751,374 @@ function OfficerInspectionResult({ result, onUpdateStatus }: { result: Result; o
   );
 }
 
-function OfficerComplaintsView({ complaints }: { complaints: Complaint[] }) {
+function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const [remarks, setRemarks] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [evidenceUrl, setEvidenceUrl] = useState<string | null>();
+  const [loadingReport, setLoadingReport] = useState(false);
+  const nav = useNavigate();
+
+  const overcharge = c.amountCharged != null && c.mrp != null ? c.amountCharged - c.mrp : null;
+  const isOvercharging = c.issueType.toLowerCase().includes('overcharg');
+
+  const statusBadgeClass = c.status === 'SUBMITTED' ? 'bad' : c.status === 'UNDER_INVESTIGATION' ? 'warn' : 'good';
+
+  React.useEffect(() => {
+    if (!expanded || !c.productId || evidenceUrl !== undefined) return;
+    getEvidenceImageUrl(c.productId).then(setEvidenceUrl).catch(() => setEvidenceUrl(null));
+  }, [expanded, c.productId]);
+
+  const viewFullReport = async () => {
+    if (!c.scanId) return;
+    setLoadingReport(true);
+    try {
+      const backendResult = await getScanResult(c.scanId);
+      const uiResult = mapToUiResult(backendResult);
+      nav('/app/report', { state: uiResult });
+    } catch (e) {
+      alert('Failed to load scan report: ' + (e as Error).message);
+    } finally {
+      setLoadingReport(false);
+    }
+  };
+
+  const doStart = async () => {
+    if (!c.dbId) return;
+    setBusy(true);
+    try { await startComplaintInvestigation(c.dbId); onRefresh(); }
+    catch (e) { alert('Failed: ' + (e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  const doResolve = async (outcome: 'CONFIRMED' | 'REJECTED') => {
+    if (!c.dbId) return;
+    if (!remarks.trim()) return alert('Please add remarks explaining your decision before closing this complaint.');
+    setBusy(true);
+    try { await resolveComplaint(c.dbId, outcome, remarks.trim()); onRefresh(); }
+    catch (e) { alert('Failed: ' + (e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <tr onClick={() => setExpanded(x => !x)} style={{ cursor: 'pointer' }}>
+        <td className="num">{c.id}</td>
+        <td><strong>{c.productName}</strong> ({c.brand})</td>
+        <td>{c.issueType}</td>
+        <td className="num">{c.date}</td>
+        <td><span className={'badge ' + statusBadgeClass}>{c.status.replace(/_/g, ' ')}</span></td>
+        <td><button className="linkbtn">{expanded ? 'Hide' : 'View / Act'} <ArrowRight size={13} /></button></td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={6} style={{ padding: 0 }}>
+            <div style={{ padding: '20px', background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-light)' }}>
+              {c.scanId ? (
+                <div style={{ display: 'flex', gap: '16px', marginBottom: '16px', alignItems: 'flex-start' }}>
+                  <div style={{ width: '160px', height: '160px', flexShrink: 0, background: '#fff', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                    {evidenceUrl === undefined ? (
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading...</span>
+                    ) : evidenceUrl === null ? (
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px', textAlign: 'center' }}>No photo found</span>
+                    ) : (
+                      <img src={evidenceUrl} alt="Evidence — original scanned label" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    )}
+                  </div>
+                  <div>
+                    <strong style={{ display: 'block', fontSize: '13px', marginBottom: '6px' }}>
+                      Evidence: original photo scanned by the consumer
+                    </strong>
+                    <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                      This is the exact packaging photo the consumer's app analysis was based on.
+                    </p>
+                    <button className="btn outline" onClick={viewFullReport} disabled={loadingReport} style={{ fontSize: '12px', padding: '6px 12px' }}>
+                      {loadingReport ? 'Loading...' : 'View Full AI Scan Report'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p style={{ margin: '0 0 12px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                  No photo attached — this complaint was filed manually, not from a product scan.
+                </p>
+              )}
+
+              <p style={{ margin: '0 0 12px', fontSize: '13px' }}><b>Description:</b> {c.description}</p>
+
+              {isOvercharging && overcharge != null && (
+                <div className="panel" style={{ margin: '0 0 16px', padding: '16px', background: 'var(--status-bad-bg)', border: '1px solid var(--status-bad-border)' }}>
+                  <strong style={{ color: 'var(--status-bad)', display: 'block', marginBottom: '6px' }}>
+                    Overcharging complaint: ₹{overcharge.toFixed(2)} above declared MRP
+
+                  </strong>
+                  <p style={{ margin: '0 0 8px', fontSize: '13px' }}>
+                    Charged ₹{c.amountCharged?.toFixed(2)} against a printed MRP of ₹{c.mrp?.toFixed(2)}.
+                  </p>
+                  <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
+                    <b>Legal basis if confirmed:</b> Selling above MRP is an offence under Section 18 of the Legal
+                    Metrology Act, 2009, penalized under Section 36 (fine up to ₹25,000 for a first offence,
+                    escalating for repeat offences, with imprisonment possible thereafter). Beyond statutory
+                    enforcement, the consumer is separately entitled to a refund of the excess amount plus
+                    compensation via the Consumer Protection Act, 2019 — either through the National Consumer
+                    Helpline (1915 / consumerhelpline.gov.in) or the local District Consumer Disputes Redressal
+                    Commission, independent of this enforcement action.
+                  </p>
+                </div>
+              )}
+
+              {c.status === 'SUBMITTED' && (
+                <button className="btn primary" onClick={doStart} disabled={busy}>
+                  {busy ? 'Starting...' : 'Start Investigation'}
+                </button>
+              )}
+
+              {c.status === 'UNDER_INVESTIGATION' && (
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', fontSize: '13px' }}>
+                    Officer remarks (required to close this complaint)
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="e.g. Visited retail outlet, confirmed overcharging via receipt evidence..."
+                    value={remarks}
+                    onChange={e => setRemarks(e.target.value)}
+                    style={{ width: '100%', padding: '10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', marginBottom: '10px' }}
+                  />
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button className="btn outline" style={{ borderColor: 'var(--status-good)', color: 'var(--status-good)' }} onClick={() => doResolve('REJECTED')} disabled={busy}>
+                      Reject — No Violation Found
+                    </button>
+                    <button className="btn primary" style={{ background: 'var(--status-bad)' }} onClick={() => doResolve('CONFIRMED')} disabled={busy}>
+                      {busy ? 'Saving...' : 'Confirm Violation'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {c.status === 'RESOLVED' && (
+                <div>
+                  <span className={'badge ' + (c.outcome === 'CONFIRMED' ? 'bad' : 'good')}>
+                    {c.outcome === 'CONFIRMED' ? 'VIOLATION CONFIRMED' : 'COMPLAINT REJECTED'}
+                  </span>
+                  {c.officerRemarks && <p style={{ margin: '10px 0 0', fontSize: '13px' }}><b>Officer remarks:</b> {c.officerRemarks}</p>}
+                </div>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function OfficerComplaintsView({ complaints, loading, onRefresh }: { complaints: Complaint[]; loading: boolean; onRefresh: () => void }) {
   return (
     <>
       <div className="page-title">
         <div>
           <span className="eyebrow">CONSUMER GRIEVANCE QUEUE</span>
           <h1>Consumer Complaints Register</h1>
-          <p>Audit consumer reported label violations and trigger enforcement inspections.</p>
+          <p>Investigate consumer-reported label violations and record enforcement outcomes. Click a row to act on it.</p>
         </div>
       </div>
       <section className="panel">
-        <table>
-          <thead>
-            <tr><th>Complaint ID</th><th>Product</th><th>Reported Issue</th><th>Date</th><th>Status</th><th>Action</th></tr>
-          </thead>
-          <tbody>
-            {complaints.map(c => (
-              <tr key={c.id}>
-                <td className="num">{c.id}</td>
-                <td><strong>{c.productName}</strong> ({c.brand})</td>
-                <td>{c.issueType}</td>
-                <td className="num">{c.date}</td>
-                <td><span className={'badge ' + (c.status === 'SUBMITTED' ? 'bad' : 'warn')}>{c.status}</span></td>
-                <td>
-                  <button className="linkbtn" onClick={() => alert(`Initiating field inspection for ${c.productName}...`)}>
-                    Initiate Audit <ArrowRight size={13} />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {loading ? (
+          <p style={{ padding: '20px' }}>Loading complaints...</p>
+        ) : complaints.length === 0 ? (
+          <p style={{ padding: '20px' }}>No complaints submitted yet.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Complaint ID</th><th>Product</th><th>Reported Issue</th><th>Date</th><th>Status</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              {complaints.map(c => <ComplaintRow key={c.id} c={c} onRefresh={onRefresh} />)}
+            </tbody>
+          </table>
+        )}
       </section>
     </>
   );
 }
 
+const LABEL_RULE_ROWS: { key: string; label: string }[] = [
+  { key: 'manufacturer', label: 'Manufacturer / packer — Rule 6(1)(a)' },
+  { key: 'countryOfOrigin', label: 'Country of origin — Rule 6(1)(aa)' },
+  { key: 'genericName', label: 'Generic name — Rule 6(1)(b)' },
+  { key: 'netQuantity', label: 'Net quantity — Rule 6(1)(c)' },
+  { key: 'manufacturingDate', label: 'Month/year of manufacture — Rule 6(1)(d)' },
+  { key: 'mrpDisplay', label: 'Retail sale price — Rule 6(1)(e)' },
+  { key: 'consumerCare', label: 'Consumer care — Rule 6(2)' },
+];
+
+function LabelGenerator() {
+  const [productName, setProductName] = useState('');
+  const [genericName, setGenericName] = useState('');
+  const [netQuantity, setNetQuantity] = useState('');
+  const [mrp, setMrp] = useState('');
+  const [manufacturer, setManufacturer] = useState('');
+  const [countryOfOrigin, setCountryOfOrigin] = useState('India');
+  const [manufacturingDate, setManufacturingDate] = useState('');
+  const [consumerCare, setConsumerCare] = useState('');
+
+  const [primaryColor, setPrimaryColor] = useState('#2563eb');
+  const [textColor, setTextColor] = useState('#0f172a');
+  const [bgColor, setBgColor] = useState('#ffffff');
+
+  const svgRef = React.useRef<SVGSVGElement>(null);
+
+  const fieldValues: Record<string, string> = {
+    manufacturer,
+    countryOfOrigin,
+    genericName,
+    netQuantity,
+    manufacturingDate,
+    mrpDisplay: mrp ? `MRP ₹${mrp} (incl. of all taxes)` : '',
+    consumerCare,
+  };
+
+  const allFilled = [productName, genericName, netQuantity, mrp, manufacturer, countryOfOrigin, manufacturingDate, consumerCare]
+    .every(f => f.trim().length > 0);
+
+  const downloadSvg = () => {
+    if (!svgRef.current) return;
+    const source = new XMLSerializer().serializeToString(svgRef.current);
+    const blob = new Blob([source], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${productName || 'label'}-compliant-label.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadPng = () => {
+    if (!svgRef.current) return;
+    const source = new XMLSerializer().serializeToString(svgRef.current);
+    const svgBlob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const scale = 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = 680 * scale;
+      canvas.height = 620 * scale;
+      const ctx = canvas.getContext('2d')!;
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, 680, 620);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(blob => {
+        if (!blob) return;
+        const pngUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = pngUrl;
+        a.download = `${productName || 'label'}-compliant-label.png`;
+        a.click();
+        URL.revokeObjectURL(pngUrl);
+      });
+    };
+    img.src = url;
+  };
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">PACKAGING DESIGN ASSISTANT</span>
+          <h1>Generate a Compliant Label</h1>
+          <p>Fill in your product details below — the layout will include every field required under the Legal Metrology (Packaged Commodities) Rules, 2011. Customize the colors, then download it as a starting point for your real artwork.</p>
+        </div>
+      </div>
+
+      <div className="dashboard-grid">
+        <section className="panel">
+          <h2>Product Details</h2>
+          <label>Brand / Product Name<input value={productName} onChange={e => setProductName(e.target.value)} placeholder="e.g. TrueGrain" /></label>
+          <label>Generic Name (Rule 6(1)(b))<input value={genericName} onChange={e => setGenericName(e.target.value)} placeholder="e.g. Premium Basmati Rice" /></label>
+          <label>Net Quantity (Rule 6(1)(c))<input value={netQuantity} onChange={e => setNetQuantity(e.target.value)} placeholder="e.g. 5 kg" /></label>
+          <label>MRP in ₹ (Rule 6(1)(e))<input value={mrp} onChange={e => setMrp(e.target.value)} placeholder="e.g. 650" /></label>
+          <label>Manufacturer Name & Address (Rule 6(1)(a))<input value={manufacturer} onChange={e => setManufacturer(e.target.value)} placeholder="e.g. ABC Foods Pvt Ltd, Pune 411001" /></label>
+          <label>Country of Origin (Rule 6(1)(aa))<input value={countryOfOrigin} onChange={e => setCountryOfOrigin(e.target.value)} /></label>
+          <label>Manufacturing Month/Year (Rule 6(1)(d))<input value={manufacturingDate} onChange={e => setManufacturingDate(e.target.value)} placeholder="e.g. 09/2026" /></label>
+          <label>Consumer Care (Rule 6(2))<input value={consumerCare} onChange={e => setConsumerCare(e.target.value)} placeholder="e.g. 1800-123-4567, care@brand.com" /></label>
+        </section>
+
+        <section className="panel">
+          <h2>Customize Styling</h2>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            Brand Color
+            <input type="color" value={primaryColor} onChange={e => setPrimaryColor(e.target.value)} style={{ width: '50px', height: '32px', padding: 0, border: '1px solid var(--border-light)' }} />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            Text Color
+            <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)} style={{ width: '50px', height: '32px', padding: 0, border: '1px solid var(--border-light)' }} />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            Background Color
+            <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)} style={{ width: '50px', height: '32px', padding: 0, border: '1px solid var(--border-light)' }} />
+          </label>
+
+          {!allFilled ? (
+            <p style={{ color: 'var(--status-warn)', fontSize: '13px', marginTop: '16px' }}>
+              Fill in all product details to generate the compliant preview and enable download.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+              <button className="btn primary" onClick={downloadPng}><Camera size={16} /> Download PNG</button>
+              <button className="btn outline" onClick={downloadSvg}>Download SVG</button>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {allFilled && (
+        <section className="panel" style={{ margin: '22px 32px' }}>
+          <h2>Live Preview</h2>
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '20px', background: 'var(--bg-subtle)', borderRadius: 'var(--radius-md)' }}>
+            <svg ref={svgRef} viewBox="0 0 680 620" width="440" xmlns="http://www.w3.org/2000/svg">
+              <rect x="0" y="0" width="680" height="620" fill={bgColor} />
+              <rect x="40" y="20" width="600" height="580" rx="12" fill="none" stroke={textColor} strokeWidth="1" opacity="0.5" />
+
+              <rect x="70" y="50" width="540" height="150" rx="8" fill={primaryColor} opacity="0.1" stroke={primaryColor} strokeWidth="1" />
+              <text x="340" y="90" textAnchor="middle" fill={textColor} fontSize="13" fontWeight="500" opacity="0.7">Principal display panel</text>
+              <text x="340" y="130" textAnchor="middle" fill={primaryColor} fontSize="24" fontWeight="700">{productName}</text>
+              <text x="340" y="155" textAnchor="middle" fill={textColor} fontSize="15">{genericName}</text>
+              <text x="340" y="180" textAnchor="middle" fill={textColor} fontSize="13">Net quantity: {netQuantity}</text>
+              <text x="340" y="200" textAnchor="middle" fill={textColor} fontSize="13">MRP: ₹{mrp} (inclusive of all taxes)</text>
+
+              <text x="90" y="245" fill={textColor} fontSize="13" fontWeight="700">Mandatory declarations (Rule 6)</text>
+
+              {LABEL_RULE_ROWS.map((row, i) => (
+                <g key={row.key}>
+                  <line x1="90" y1={260 + i * 44} x2="610" y2={260 + i * 44} stroke={textColor} strokeWidth="0.5" opacity="0.2" />
+                  <text x="90" y={260 + i * 44 + 22} fill={textColor} fontSize="11" opacity="0.65">{row.label}</text>
+                  <text x="610" y={260 + i * 44 + 22} textAnchor="end" fill={textColor} fontSize="12" fontWeight="600">{fieldValues[row.key]}</text>
+                </g>
+              ))}
+            </svg>
+          </div>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '14px' }}>
+            This preview includes every field currently required by the compliance rule engine. Use it as a starting
+            layout — swap in your logo, imagery, and final artwork around these declarations before sending to print,
+            then run it through Package Check to confirm the final design still passes.
+          </p>
+        </section>
+      )}
+    </>
+  );
+}
+
 function ManufacturerDashboard({ onNewScan }: { onNewScan: () => void }) {
-  const [activeTab, setActiveTab] = useState<'check' | 'compare'>('check');
+  const [stats, setStats] = useState({ totalScans: 0, compliant: 0, nonCompliant: 0, review: 0, pendingComplaints: 0, confirmedViolations: 0 });
+  const [recentScans, setRecentScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
+  const [loading, setLoading] = useState(true);
+
+  React.useEffect(() => {
+    Promise.all([getDashboardStats(), listRealScans()])
+      .then(([s, scans]) => { setStats(s); setRecentScans(scans); })
+      .catch(e => alert('Failed to load dashboard: ' + (e as Error).message))
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <>
@@ -728,55 +1132,33 @@ function ManufacturerDashboard({ onNewScan }: { onNewScan: () => void }) {
       </div>
 
       <div className="stats">
-        <article><b className="num">46</b><span>Packages Checked</span></article>
-        <article><b className="num" style={{ color: 'var(--status-good)' }}>34</b><span>Passed / Market Ready</span></article>
-        <article><b className="num" style={{ color: 'var(--status-warn)' }}>12</b><span>Corrections Required</span></article>
+        <article><b className="num">{stats.totalScans}</b><span>Packages Checked</span></article>
+        <article><b className="num" style={{ color: 'var(--status-good)' }}>{stats.compliant}</b><span>Passed / Market Ready</span></article>
+        <article><b className="num" style={{ color: 'var(--status-warn)' }}>{stats.nonCompliant}</b><span>Corrections Required</span></article>
         <article><b className="num" style={{ color: 'var(--brand-primary)' }}>100%</b><span>Audit Trail Saved</span></article>
       </div>
 
       <div className="panel" style={{ margin: '20px 32px' }}>
-        <div style={{ display: 'flex', gap: '12px', borderBottom: '1px solid var(--border-light)', paddingBottom: '12px', marginBottom: '16px' }}>
-          <button className={'btn ' + (activeTab === 'check' ? 'primary' : 'outline')} onClick={() => setActiveTab('check')}>Recent Artwork Checks</button>
-          <button className={'btn ' + (activeTab === 'compare' ? 'primary' : 'outline')} onClick={() => setActiveTab('compare')}><ArrowLeftRight size={14} /> Compare Previous vs Corrected Design</button>
-        </div>
-
-        {activeTab === 'check' ? (
+        <h2>Recent Artwork Checks</h2>
+        {loading ? (
+          <p>Loading...</p>
+        ) : recentScans.length === 0 ? (
+          <p>No packaging checks yet.</p>
+        ) : (
           <table>
             <thead>
-              <tr><th>Packaging Item</th><th>Category</th><th>Score</th><th>Status</th><th>Required Correction</th></tr>
+              <tr><th>Packaging Item</th><th>Score</th><th>Status</th></tr>
             </thead>
             <tbody>
-              <tr>
-                <td>🍚 Premium Basmati Rice (5kg)</td>
-                <td>Food grain</td>
-                <td className="num">98/100</td>
-                <td><span className="badge good">COMPLIANT</span></td>
-                <td>None - Batch released</td>
-              </tr>
-              <tr>
-                <td>🍪 Golden Crunch Biscuits (300g)</td>
-                <td>Packaged Food</td>
-                <td className="num">62/100</td>
-                <td><span className="badge bad">CHANGES NEEDED</span></td>
-                <td>Missing MRP inclusive of taxes (Rule 6(1)(e))</td>
-              </tr>
+              {recentScans.map(r => (
+                <tr key={r.scanId}>
+                  <td>📦 {r.productName}</td>
+                  <td className="num">{r.score}/100</td>
+                  <td><span className={'badge ' + cls(r.status as Status)}>{r.status.replace(/_/g, ' ')}</span></td>
+                </tr>
+              ))}
             </tbody>
           </table>
-        ) : (
-          <div className="ba-grid" style={{ marginTop: '10px' }}>
-            <div className="ba-col before">
-              <h3><XCircle size={14} /> Previous Label (Draft v1.0)</h3>
-              <p><b>Net Quantity:</b> 1 Litre (900 mL) <span style={{ color: 'var(--status-bad)' }}>[Malformed]</span></p>
-              <p><b>MRP:</b> ₹340 (Taxes extra) <span style={{ color: 'var(--status-bad)' }}>[Invalid]</span></p>
-              <span className="badge bad">FAILED PRE-MARKET AUDIT</span>
-            </div>
-            <div className="ba-col after">
-              <h3><CheckCircle2 size={14} /> Corrected Label (Artwork v2.0)</h3>
-              <p><b>Net Quantity:</b> 1 L (1000 mL) <span style={{ color: 'var(--status-good)' }}>[Verified]</span></p>
-              <p><b>MRP:</b> ₹340 (incl. of all taxes) <span style={{ color: 'var(--status-good)' }}>[Compliant]</span></p>
-              <span className="badge good">READY FOR PRINTING</span>
-            </div>
-          </div>
         )}
       </div>
     </>
@@ -784,12 +1166,16 @@ function ManufacturerDashboard({ onNewScan }: { onNewScan: () => void }) {
 }
 
 function SellerDashboard({ onNewScan }: { onNewScan: () => void }) {
-  const [selectedBatch, setSelectedBatch] = useState<string[]>([]);
-  const [bulkRan, setBulkRan] = useState(false);
+  const [stats, setStats] = useState({ totalScans: 0, compliant: 0, nonCompliant: 0, review: 0, pendingComplaints: 0, confirmedViolations: 0 });
+  const [recentScans, setRecentScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
+  const [loading, setLoading] = useState(true);
 
-  const toggleSelect = (id: string) => {
-    setSelectedBatch(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  };
+  React.useEffect(() => {
+    Promise.all([getDashboardStats(), listRealScans()])
+      .then(([s, scans]) => { setStats(s); setRecentScans(scans); })
+      .catch(e => alert('Failed to load dashboard: ' + (e as Error).message))
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <>
@@ -797,61 +1183,39 @@ function SellerDashboard({ onNewScan }: { onNewScan: () => void }) {
         <div>
           <span className="eyebrow">E-COMMERCE SELLER DESK</span>
           <h1>Marketplace Listing Compliance</h1>
-          <p>Scan catalogue images and run bulk compliance checks to ensure all PDP declarations are visible before listing.</p>
+          <p>Scan catalogue images to ensure all PDP declarations are visible before listing.</p>
         </div>
         <button className="btn primary" onClick={onNewScan}><Camera size={16} /> Scan Listing Label</button>
       </div>
 
       <div className="stats">
-        <article><b className="num">82</b><span>Listings Scanned</span></article>
-        <article><b className="num" style={{ color: 'var(--status-good)' }}>58</b><span>Passed Listings</span></article>
-        <article><b className="num" style={{ color: 'var(--status-warn)' }}>18</b><span>Needs Review</span></article>
-        <article><b className="num" style={{ color: 'var(--status-bad)' }}>6</b><span>Potential High Risk</span></article>
+        <article><b className="num">{stats.totalScans}</b><span>Listings Scanned</span></article>
+        <article><b className="num" style={{ color: 'var(--status-good)' }}>{stats.compliant}</b><span>Passed Listings</span></article>
+        <article><b className="num" style={{ color: 'var(--status-warn)' }}>{stats.review}</b><span>Needs Review</span></article>
+        <article><b className="num" style={{ color: 'var(--status-bad)' }}>{stats.nonCompliant}</b><span>Potential High Risk</span></article>
       </div>
 
       <section className="panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-          <div>
-            <h2>Bulk Marketplace Checker (Demo)</h2>
-            <p style={{ margin: 0 }}>Select catalogue inventory items to run simulated batch rule validation.</p>
-          </div>
-          <button 
-            className="btn primary" 
-            disabled={selectedBatch.length === 0} 
-            onClick={() => setBulkRan(true)}
-          >
-            <ClipboardCheck size={16} /> Run Bulk Check ({selectedBatch.length})
-          </button>
-        </div>
-
-        <table>
-          <thead>
-            <tr><th>Select</th><th>Catalogue SKU</th><th>Declared MRP</th><th>Origin</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            {products.map(p => (
-              <tr key={p.id}>
-                <td>
-                  <input 
-                    type="checkbox" 
-                    checked={selectedBatch.includes(p.id)} 
-                    onChange={() => toggleSelect(p.id)} 
-                  />
-                </td>
-                <td>{p.image} <strong>{p.name}</strong></td>
-                <td>{p.fields['MRP'] || 'N/A'}</td>
-                <td>{p.fields['Country of Origin'] || 'India'}</td>
-                <td><span className={'badge ' + cls(p.status)}>{p.status}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-
-        {bulkRan && (
-          <div style={{ marginTop: '18px', padding: '16px', background: 'var(--bg-subtle)', borderRadius: 'var(--radius-sm)' }}>
-            <h3 style={{ color: 'var(--brand-primary)', margin: '0 0 6px' }}>Bulk Verification Summary</h3>
-            <p style={{ margin: 0 }}>Verified {selectedBatch.length} product listings: 1 fully compliant, {selectedBatch.length - 1} requires PDP updates before publishing to marketplace.</p>
-          </div>
+        <h2>Catalogue Listing Checks</h2>
+        {loading ? (
+          <p>Loading...</p>
+        ) : recentScans.length === 0 ? (
+          <p>No listings scanned yet.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Catalogue Item</th><th>Score</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {recentScans.map(r => (
+                <tr key={r.scanId}>
+                  <td>📦 <strong>{r.productName}</strong></td>
+                  <td className="num">{r.score}/100</td>
+                  <td><span className={'badge ' + cls(r.status as Status)}>{r.status.replace(/_/g, ' ')}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </section>
     </>
@@ -907,28 +1271,214 @@ function ConsumerDashboard({ onNewScan }: { onNewScan: () => void }) {
   );
 }
 
-function ConsumerComplaintForm({ onSubmit }: { onSubmit: (c: Complaint) => void }) {
-  const [productName, setProductName] = useState('');
-  const [brand, setBrand] = useState('');
-  const [category, setCategory] = useState('Food & Grocery');
-  const [issueType, setIssueType] = useState('Missing MRP');
-  const [description, setDescription] = useState('');
-  const [submitted, setSubmitted] = useState(false);
+const ISSUE_TYPE_OPTIONS = [
+  'Missing Manufacturer / Packer Address',
+  'Missing Generic/Common Name of Commodity',
+  'Missing Net Quantity Declaration',
+  'Contradictory / Incorrect Net Quantity',
+  'Missing Manufacturing Date',
+  'Missing Maximum Retail Price (MRP)',
+  'Missing Country of Origin',
+  'Missing Consumer Care Details',
+  'Overcharging Above Printed MRP',
+];
 
-  const handleSubmit = (e: React.FormEvent) => {
+// Maps a rule's code (from a real scan violation) to the matching standard
+// checkbox label above, so pre-filled complaints select the exact same
+// option instead of a slightly-differently-worded duplicate.
+const RULE_CODE_TO_ISSUE_LABEL: Record<string, string> = {
+  'LM-6-1-A': 'Missing Manufacturer / Packer Address',
+  'LM-6-1-B': 'Missing Generic/Common Name of Commodity',
+  'LM-6-1-C': 'Missing Net Quantity Declaration',
+  'LM-6-1-C-CONSISTENCY': 'Contradictory / Incorrect Net Quantity',
+  'LM-6-1-D': 'Missing Manufacturing Date',
+  'LM-6-1-E': 'Missing Maximum Retail Price (MRP)',
+  'LM-6-1-AA': 'Missing Country of Origin',
+  'LM-6-2': 'Missing Consumer Care Details',
+};
+
+function consumerStatusLabel(c: Complaint): { label: string; cls: string } {
+  if (c.status === 'RESOLVED') {
+    return c.outcome === 'CONFIRMED'
+      ? { label: 'Accepted', cls: 'good' }
+      : { label: 'Rejected', cls: 'bad' };
+  }
+  if (c.status === 'UNDER_INVESTIGATION') return { label: 'Under Review', cls: 'warn' };
+  return { label: 'Pending', cls: 'warn' };
+}
+
+function ConsumerGrievanceRow({ c }: { c: Complaint }) {
+  const [expanded, setExpanded] = useState(false);
+  const { label, cls } = consumerStatusLabel(c);
+  const hasNote = c.status === 'RESOLVED' && !!c.officerRemarks;
+
+  return (
+    <>
+      <tr onClick={() => setExpanded(x => !x)} style={{ cursor: 'pointer' }}>
+        <td className="num">{c.id}</td>
+        <td><strong>{c.productName}</strong> ({c.brand})</td>
+        <td>{c.issueType}</td>
+        <td className="num">{c.date}</td>
+        <td><span className={'badge ' + cls}>{label}</span></td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={5} style={{ padding: 0 }}>
+            <div style={{ padding: '18px 20px', background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-light)' }}>
+              <p style={{ margin: '0 0 10px', fontSize: '13px' }}><b>Your description:</b> {c.description}</p>
+              {c.status === 'SUBMITTED' && (
+                <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-muted)' }}>
+                  Waiting for a Legal Metrology Officer to begin reviewing this grievance.
+                </p>
+              )}
+              {c.status === 'UNDER_INVESTIGATION' && (
+                <p style={{ margin: 0, fontSize: '13px', color: 'var(--status-warn)' }}>
+                  An officer is currently investigating this complaint (e.g. visiting the retail outlet to verify).
+                </p>
+              )}
+              {hasNote && (
+                <div style={{ padding: '12px', background: '#fff', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}>
+                  <strong style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                    Officer's note:
+                  </strong>
+                  <p style={{ margin: 0, fontSize: '13px' }}>{c.officerRemarks}</p>
+                </div>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function ConsumerGrievancesPage({ onGlobalComplaintAdd }: { onGlobalComplaintAdd: (c: Complaint) => void }) {
+  const prefill = useLocation().state as {
+    productName?: string;
+    brand?: string;
+    category?: string;
+    issueType?: string;
+    description?: string;
+    scanId?: string;
+  } | null;
+
+  const [view, setView] = useState<'list' | 'form'>(prefill ? 'form' : 'list');
+  const [myComplaints, setMyComplaints] = useState<Complaint[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadComplaints = () => {
+    setLoading(true);
+    listComplaintsReal()
+      .then(setMyComplaints)
+      .catch(e => alert('Failed to load grievances: ' + (e as Error).message))
+      .finally(() => setLoading(false));
+  };
+
+  React.useEffect(() => { loadComplaints(); }, []);
+
+  if (view === 'form') {
+    return (
+      <ConsumerComplaintForm
+        prefill={prefill}
+        onCancel={() => setView('list')}
+        onSubmit={c => { onGlobalComplaintAdd(c); loadComplaints(); setView('list'); }}
+      />
+    );
+  }
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">CITIZEN GRIEVANCE REGISTRATION</span>
+          <h1>My Grievances</h1>
+          <p>Track the status of complaints you have submitted. Click a row to see the officer's note.</p>
+        </div>
+        <button className="btn primary" onClick={() => setView('form')}>
+          <MessageSquare size={16} /> Report New Issue
+        </button>
+      </div>
+      <section className="panel">
+        {loading ? (
+          <p style={{ padding: '20px' }}>Loading your grievances...</p>
+        ) : myComplaints.length === 0 ? (
+          <p style={{ padding: '20px' }}>You haven't submitted any grievances yet.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Complaint ID</th><th>Product</th><th>Issue</th><th>Date</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {myComplaints.map(c => <ConsumerGrievanceRow key={c.id} c={c} />)}
+            </tbody>
+          </table>
+        )}
+      </section>
+      <div style={{ padding: '0 32px 32px' }}>
+        <NchCard />
+      </div>
+    </>
+  );
+}
+
+function ConsumerComplaintForm({ prefill, onSubmit, onCancel }: {
+  prefill: { productName?: string; brand?: string; category?: string; issueType?: string; description?: string; scanId?: string } | null;
+  onSubmit: (c: Complaint) => void;
+  onCancel: () => void;
+}) {
+  const [productName, setProductName] = useState(prefill?.productName ?? '');
+  const [brand, setBrand] = useState(prefill?.brand ?? '');
+  const [category, setCategory] = useState(prefill?.category ?? 'Food & Grocery');
+  const [selectedIssues, setSelectedIssues] = useState<string[]>(prefill?.issueType ? prefill.issueType.split(', ').filter(Boolean) : []);
+  const [description, setDescription] = useState(prefill?.description ?? '');
+  const [amountCharged, setAmountCharged] = useState('');
+  const [mrp, setMrp] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [refId, setRefId] = useState('');
+
+  // Include the prefilled issue text as a checkbox option even if it doesn't
+  // match one of the standard categories (e.g. an exact violation from a scan).
+  const issueOptions = Array.from(new Set([...ISSUE_TYPE_OPTIONS, ...selectedIssues]));
+  const isOvercharging = selectedIssues.some(x => x.toLowerCase().includes('overcharg'));
+
+  const toggleIssue = (opt: string) => {
+    setSelectedIssues(prev => prev.includes(opt) ? prev.filter(x => x !== opt) : [...prev, opt]);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const newComp: Complaint = {
-      id: 'CMP-' + Math.floor(1000 + Math.random() * 9000),
-      productName,
-      brand,
-      category,
-      issueType,
-      description,
-      status: 'SUBMITTED',
-      date: new Date().toLocaleDateString('en-IN')
-    };
-    onSubmit(newComp);
-    setSubmitted(true);
+    if (selectedIssues.length === 0) return alert('Please select at least one issue type.');
+    if (isOvercharging && (!amountCharged || !mrp)) {
+      return alert('Please enter both the amount you were charged and the printed MRP.');
+    }
+    setSubmitting(true);
+    try {
+      const issueType = selectedIssues.join(', ');
+      const saved = await submitComplaint({ 
+        productName, brand, category, issueType, description,
+        amountCharged: isOvercharging ? parseFloat(amountCharged) : undefined,
+        mrp: isOvercharging ? parseFloat(mrp) : undefined,
+        scanId: prefill?.scanId
+      });
+      const newComp: Complaint = {
+        id: 'CMP-' + saved.id.slice(0, 8).toUpperCase(),
+        productName,
+        brand,
+        category,
+        issueType,
+        description,
+        status: 'SUBMITTED',
+        date: new Date().toLocaleDateString('en-IN')
+      };
+      onSubmit(newComp);
+      setRefId(newComp.id);
+      setSubmitted(true);
+    } catch (err) {
+      alert('Failed to submit complaint: ' + (err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -940,8 +1490,9 @@ function ConsumerComplaintForm({ onSubmit }: { onSubmit: (c: Complaint) => void 
           <CheckCircle2 size={24} />
           <div>
             <h2 style={{ margin: 0, color: 'var(--status-good)' }}>Grievance Submitted Successfully</h2>
-            <p style={{ margin: '4px 0 0' }}>Your mock reference ID is <b>CR-LG-2026-9921</b>. Assigned to Legal Metrology Officer.</p>
+            <p style={{ margin: '4px 0 0' }}>Your reference ID is <b>{refId}</b>. Assigned to Legal Metrology Officer.</p>
           </div>
+          <button className="btn outline" style={{ marginTop: '16px' }} onClick={onCancel}>Back to My Grievances</button>
         </div>
       ) : (
         <form onSubmit={handleSubmit}>
@@ -953,20 +1504,47 @@ function ConsumerComplaintForm({ onSubmit }: { onSubmit: (c: Complaint) => void 
               <option>Edible Oils</option>
               <option>Spices & Condiments</option>
               <option>Packaged Goods</option>
+              <option>Packaged food</option>
             </select>
           </label>
-          <label>Suspected Issue Type
-            <select value={issueType} onChange={e => setIssueType(e.target.value)}>
-              <option>Missing Maximum Retail Price (MRP)</option>
-              <option>Contradictory / Incorrect Net Quantity</option>
-              <option>Missing Manufacturer / Packer Address</option>
-              <option>Overcharging Above Printed MRP</option>
-            </select>
-          </label>
+          <label>Suspected Issue Type(s) — select all that apply</label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '8px 0 16px' }}>
+            {issueOptions.map(opt => (
+              <label key={opt} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 400, margin: 0 }}>
+                <input type="checkbox" checked={selectedIssues.includes(opt)} onChange={() => toggleIssue(opt)} style={{ width: 'auto' }} />
+                {opt}
+              </label>
+            ))}
+          </div>
+          {isOvercharging && (
+            <div className="panel" style={{ margin: '0 0 16px', padding: '16px', background: 'var(--status-bad-bg)', border: '1px solid var(--status-bad-border)' }}>
+              <strong style={{ display: 'block', marginBottom: '10px', color: 'var(--status-bad)' }}>
+                Overcharging details — this strengthens your case significantly
+              </strong>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <label style={{ margin: 0 }}>Amount you were actually charged (₹)
+                  <input required type="number" step="0.01" min="0" placeholder="e.g. 380" value={amountCharged} onChange={e => setAmountCharged(e.target.value)} />
+                </label>
+                <label style={{ margin: 0 }}>Printed MRP on the package (₹)
+                  <input required type="number" step="0.01" min="0" placeholder="e.g. 340" value={mrp} onChange={e => setMrp(e.target.value)} />
+                </label>
+              </div>
+              {amountCharged && mrp && parseFloat(amountCharged) > parseFloat(mrp) && (
+                <p style={{ margin: '10px 0 0', fontSize: '13px', color: 'var(--status-bad)', fontWeight: 600 }}>
+                  Overcharged by ₹{(parseFloat(amountCharged) - parseFloat(mrp)).toFixed(2)} — this is an offence under the Legal Metrology Act, 2009.
+                </p>
+              )}
+            </div>
+          )}
           <label>Description of Violation
             <textarea required placeholder="Explain what you observed on the package label..." value={description} onChange={e => setDescription(e.target.value)} rows={3} />
           </label>
-          <button className="btn primary wide">Submit Grievance to Legal Metrology</button>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button type="button" className="btn outline" onClick={onCancel}>Cancel</button>
+            <button className="btn primary wide" disabled={submitting}>
+              {submitting ? 'Submitting...' : 'Submit Grievance to Legal Metrology'}
+            </button>
+          </div>
         </form>
       )}
       <NchCard />
@@ -976,9 +1554,33 @@ function ConsumerComplaintForm({ onSubmit }: { onSubmit: (c: Complaint) => void 
 
 function HistoryPage({ role }: { role: Role }) {
   const [q, setQ] = useState('');
-  const allResults = products.map(makeMockResult);
-  const filtered = allResults.filter(r => r.product.name.toLowerCase().includes(q.toLowerCase()));
   const nav = useNavigate();
+
+  const [realScans, setRealScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [loadingReportId, setLoadingReportId] = useState<string>();
+
+  React.useEffect(() => {
+    listRealScans()
+      .then(setRealScans)
+      .catch(e => alert('Failed to load history: ' + (e as Error).message))
+      .finally(() => setLoadingHistory(false));
+  }, []);
+
+  const openRealReport = async (scanId: string) => {
+    setLoadingReportId(scanId);
+    try {
+      const backendResult = await getScanResult(scanId);
+      const uiResult = mapToUiResult(backendResult);
+      nav('/app/report', { state: uiResult });
+    } catch (e) {
+      alert('Failed to load report: ' + (e as Error).message);
+    } finally {
+      setLoadingReportId(undefined);
+    }
+  };
+
+  const filtered = realScans.filter(r => r.productName.toLowerCase().includes(q.toLowerCase()));
 
   return (
     <>
@@ -986,7 +1588,7 @@ function HistoryPage({ role }: { role: Role }) {
         <div>
           <span className="eyebrow">{labels[role].toUpperCase()} AUDIT REGISTER</span>
           <h1>{role === 'officer' ? 'Inspection History' : 'Analysis Records'}</h1>
-          <p>Search and review historical label assessments.</p>
+          <p>Real scans stored in your database, most recent first.</p>
         </div>
       </div>
       <div className="filters">
@@ -994,26 +1596,34 @@ function HistoryPage({ role }: { role: Role }) {
         <input placeholder="Search by product name..." value={q} onChange={e => setQ(e.target.value)} />
       </div>
       <section className="panel">
-        <table>
-          <thead>
-            <tr><th>Audit ID</th><th>Product</th><th>Manufacturer</th><th>Score</th><th>Status</th><th>Violations</th><th>Action</th></tr>
-          </thead>
-          <tbody>
-            {filtered.map(r => (
-              <tr key={r.id}>
-                <td className="num">{r.id}</td>
-                <td>{r.product.image} {r.product.name}</td>
-                <td>{r.product.manufacturer}</td>
-                <td className="num">{r.score}/100</td>
-                <td><span className={'badge ' + cls(r.status)}>{r.status.replace(/_/g, ' ')}</span></td>
-                <td className="num">{r.violations.length}</td>
-                <td>
-                  <button className="linkbtn" onClick={() => nav('/app/report', { state: r })}>View Report</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {loadingHistory ? (
+          <p style={{ padding: '20px' }}>Loading history...</p>
+        ) : filtered.length === 0 ? (
+          <p style={{ padding: '20px' }}>No scans yet. Run a compliance scan to see it appear here.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Audit ID</th><th>Product</th><th>Manufacturer</th><th>Score</th><th>Status</th><th>Violations</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              {filtered.map(r => (
+                <tr key={r.scanId}>
+                  <td className="num">{r.id}</td>
+                  <td>📦 {r.productName}</td>
+                  <td>{r.manufacturer}</td>
+                  <td className="num">{r.score}/100</td>
+                  <td><span className={'badge ' + cls(r.status as Status)}>{r.status.replace(/_/g, ' ')}</span></td>
+                  <td className="num">{r.violationCount}</td>
+                  <td>
+                    <button className="linkbtn" onClick={() => openRealReport(r.scanId)} disabled={loadingReportId === r.scanId}>
+                      {loadingReportId === r.scanId ? 'Loading...' : 'View Report'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
     </>
   );
@@ -1189,14 +1799,35 @@ function Login() {
   return (
     <main className="login">
       <Link className="brand" to="/"><ShieldCheck /> LabelGuard</Link>
-      <form onSubmit={e => { 
+      <form onSubmit={async e => { 
         e.preventDefault(); 
-        if (email === creds[role].email && password === creds[role].password) { 
-          localStorage.setItem('lg-user', JSON.stringify({ role, name: creds[role].name })); 
-          nav('/app'); 
-        } else {
-          alert('Use the displayed demo credentials.'); 
+
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: creds[role].email,
+          password: creds[role].password
+        });
+        if (error || !data.user) {
+          alert('Login failed: ' + (error?.message ?? 'Unknown error'));
+          return;
         }
+
+        const { data: profile, error: profileErr } = await supabase
+          .from('profiles')
+          .select('id, full_name, role, organization_id')
+          .eq('id', data.user.id)
+          .single();
+        if (profileErr || !profile) {
+          alert('Could not load profile: ' + (profileErr?.message ?? 'Unknown error'));
+          return;
+        }
+
+        localStorage.setItem('lg-user', JSON.stringify({ 
+          role, 
+          name: profile.full_name,
+          userId: profile.id,
+          organizationId: profile.organization_id
+        })); 
+        nav('/app'); 
       }}>
         <span className="eyebrow">DEMO ACCESS (SIH PROTOTYPE)</span>
         <h1>Select Role to Log In</h1>
@@ -1218,12 +1849,22 @@ function Login() {
 
 function AppShell() {
   const nav = useNavigate();
-  const user = JSON.parse(localStorage.getItem('lg-user') || 'null') as { role: Role; name: string } | null;
+  const user = JSON.parse(localStorage.getItem('lg-user') || 'null') as { role: Role; name: string; userId?: string; organizationId?: string | null } | null;
   if (!user) return <Navigate to="/login" />;
 
   const [scanResult, setScanResult] = useState<Result>();
   const [isConsumerScanning, setIsConsumerScanning] = useState(false);
-  const [complaints, setComplaints] = useState<Complaint[]>(initialComplaints);
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [complaintsLoading, setComplaintsLoading] = useState(true);
+
+  const loadComplaints = () => {
+    listComplaintsReal()
+      .then(setComplaints)
+      .catch(e => console.error('Failed to load complaints:', e))
+      .finally(() => setComplaintsLoading(false));
+  };
+
+  React.useEffect(() => { loadComplaints(); }, []);
 
   const navConfig: Record<Role, { label: string; path: string; icon: React.ReactNode; badge?: number; action?: () => void }[]> = {
     officer: [
@@ -1235,6 +1876,7 @@ function AppShell() {
     manufacturer: [
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
       { label: 'Package Check', path: 'scan', icon: <Camera size={17} /> },
+      { label: 'Label Generator', path: 'label-generator', icon: <Sparkles size={17} /> },
       { label: 'Analysis History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
     seller: [
@@ -1256,18 +1898,25 @@ function AppShell() {
     ],
   };
 
-  const handleStatusUpdate = (newStatus: Status) => {
+  const handleStatusUpdate = async (newStatus: Status) => {
     if (!scanResult) return;
-    const updatedResult: Result = {
-      ...scanResult,
-      status: newStatus,
-      review: {
-        inspector: user.name,
-        confirmedAt: new Date().toLocaleString('en-IN')
+    try {
+      if (scanResult.dbScanId && (newStatus === 'INSPECTOR_CONFIRMED_NON_COMPLIANT' || newStatus === 'UNDER_REINSPECTION')) {
+        await updateScanStatus(scanResult.dbScanId, newStatus);
       }
-    };
-    setScanResult(updatedResult);
-    alert(`Status updated to: ${newStatus.replace(/_/g, ' ')}`);
+      const updatedResult: Result = {
+        ...scanResult,
+        status: newStatus,
+        review: {
+          inspector: user.name,
+          confirmedAt: new Date().toLocaleString('en-IN')
+        }
+      };
+      setScanResult(updatedResult);
+      alert(`Status updated to: ${newStatus.replace(/_/g, ' ')}`);
+    } catch (e) {
+      alert('Failed to update status: ' + (e as Error).message);
+    }
   };
 
   const currentNav = navConfig[user.role];
@@ -1294,7 +1943,7 @@ function AppShell() {
           </NavLink>
         ))}
 
-        <button className="logout" onClick={() => { localStorage.removeItem('lg-user'); nav('/'); }}>
+        <button className="logout" onClick={async () => { await supabase.auth.signOut(); localStorage.removeItem('lg-user'); nav('/'); }}>
           <LogOut size={17} /> Logout
         </button>
       </aside>
@@ -1326,7 +1975,7 @@ function AppShell() {
                   <Scanner done={setScanResult} role="officer" />
                 </>
               )} />
-              <Route path="complaints" element={<OfficerComplaintsView complaints={complaints} />} />
+              <Route path="complaints" element={<OfficerComplaintsView complaints={complaints} loading={complaintsLoading} onRefresh={loadComplaints} />} />
               <Route path="history" element={<HistoryPage role="officer" />} />
             </>
           )}
@@ -1369,6 +2018,7 @@ function AppShell() {
                 </>
               )} />
               <Route path="history" element={<HistoryPage role="manufacturer" />} />
+              <Route path="label-generator" element={<LabelGenerator />} />
             </>
           )}
 
@@ -1427,43 +2077,34 @@ function AppShell() {
                       <Seal score={scanResult.score} statusLabel={scanResult.status === 'COMPLIANT' ? 'COMPLIANT' : 'NON COMPLIANT'} tone={cls(scanResult.status) as 'good' | 'warn' | 'bad'} />
                     </div>
 
-                    {scanResult.status !== 'COMPLIANT' && (
-                      <div 
-                        className="panel" 
-                        style={{ 
-                          margin: '18px 0', 
-                          background: 'var(--status-bad-bg)', 
-                          border: '2px solid var(--status-bad)', 
-                          borderRadius: 'var(--radius-md)', 
-                          padding: '20px' 
-                        }}
-                      >
-                        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                          <AlertCircle size={24} color="var(--status-bad)" style={{ flexShrink: 0, marginTop: '2px' }} />
-                          <div>
-                            <h2 style={{ margin: '0 0 6px', color: 'var(--status-bad)', fontSize: '18px' }}>
-                              Non-Compliance Alert Detected!
-                            </h2>
-                            <p style={{ margin: '0 0 12px', color: '#7f1d1d', fontSize: '14px', fontWeight: 600 }}>
-                              This product packaging violates mandatory Indian Legal Metrology (Packaged Commodities) Rules:
-                            </p>
-                            
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                              {scanResult.violations.map((v, i) => (
-                                <div key={i} style={{ background: '#ffffff', padding: '10px 14px', borderRadius: 'var(--radius-sm)', borderLeft: '4px solid var(--status-bad)' }}>
-                                  <strong style={{ color: 'var(--status-bad)', display: 'block', fontSize: '13px' }}>
-                                    ⚠️ {v.requirement} ({v.section})
-                                  </strong>
-                                  <span style={{ fontSize: '13px', color: '#334155' }}>
-                                    {v.explanation}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
+                    <div 
+                      className="panel" 
+                      style={{ 
+                        margin: '18px 0', 
+                        background: scanResult.status === 'COMPLIANT' ? 'var(--status-good-bg)' : 'var(--status-bad-bg)', 
+                        border: '2px solid ' + (scanResult.status === 'COMPLIANT' ? 'var(--status-good)' : 'var(--status-bad)'), 
+                        borderRadius: 'var(--radius-md)', 
+                        padding: '20px' 
+                      }}
+                    >
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                        {scanResult.status === 'COMPLIANT' 
+                          ? <CheckCircle2 size={24} color="var(--status-good)" style={{ flexShrink: 0, marginTop: '2px' }} />
+                          : <AlertCircle size={24} color="var(--status-bad)" style={{ flexShrink: 0, marginTop: '2px' }} />
+                        }
+                        <div>
+                          <h2 style={{ margin: '0 0 6px', color: scanResult.status === 'COMPLIANT' ? 'var(--status-good)' : 'var(--status-bad)', fontSize: '18px' }}>
+                            {scanResult.status === 'COMPLIANT' ? 'This product looks compliant' : "This product isn't fully compliant"}
+                          </h2>
+                          <p style={{ margin: 0, color: '#334155', fontSize: '14px' }}>
+                            {scanResult.status === 'COMPLIANT'
+                              ? 'All the mandatory information — like price, quantity, manufacturer, and origin — is clearly printed on this package.'
+                              : `This package is missing or unclear on ${scanResult.violations.length} required detail${scanResult.violations.length === 1 ? '' : 's'}: ${scanResult.violations.map(v => v.requirement).join(', ')}. That's why it's marked non-compliant.`
+                            }
+                          </p>
                         </div>
                       </div>
-                    )}
+                    </div>
 
                     <section className="panel" style={{ margin: '18px 0' }}>
                       <h2>Essential Label Checklist</h2>
@@ -1483,7 +2124,19 @@ function AppShell() {
 
                     <div className="result-actions" style={{ justifyContent: 'flex-start', gap: '10px' }}>
                       {scanResult.status !== 'COMPLIANT' && (
-                        <button className="btn primary" onClick={() => nav('/app/complaint')}>
+                        <button 
+                          className="btn primary" 
+                          onClick={() => nav('/app/complaint', { 
+                            state: {
+                              productName: scanResult.product.name,
+                              brand: scanResult.product.manufacturer,
+                              category: scanResult.product.category,
+                              issueType: scanResult.violations.map(v => RULE_CODE_TO_ISSUE_LABEL[v.section] ?? v.requirement).join(', '),
+                              description: `The following required details were missing or unclear on the packaging: ${scanResult.violations.map(v => v.requirement).join(', ')}.`,
+                              scanId: scanResult.dbScanId
+                            } 
+                          })}
+                        >
                           Report This Violation to Officer
                         </button>
                       )}
@@ -1516,7 +2169,7 @@ function AppShell() {
                   <ConsumerDashboard onNewScan={() => setIsConsumerScanning(true)} />
                 )
               } />
-              <Route path="complaint" element={<ConsumerComplaintForm onSubmit={c => setComplaints(prev => [c, ...prev])} />} />
+              <Route path="complaint" element={<ConsumerGrievancesPage onGlobalComplaintAdd={c => setComplaints(prev => [c, ...prev])} />} />
             </>
           )}
 
