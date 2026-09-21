@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from './lib/supabase';
-import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl } from './lib/api';
+import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan } from './lib/api';
 
 type DbProfile = {
   id: string;
@@ -416,24 +416,41 @@ const SCAN_STEPS = [
   'Generating compliance assessment...'
 ];
 
+const IMAGE_SLOTS: { type: 'FRONT' | 'BACK' | 'STRIP'; label: string; hint: string; required: boolean }[] = [
+  { type: 'FRONT', label: 'Front panel', hint: 'Brand, product name', required: true },
+  { type: 'BACK', label: 'Back panel', hint: 'Manufacturer, consumer care', required: false },
+  { type: 'STRIP', label: 'Tear-strip / seal', hint: 'Often has MRP, batch info', required: false },
+];
+
 function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
-  const [file, setFile] = useState<string>();
-  const [fileObj, setFileObj] = useState<File>();
+  const [slots, setSlots] = useState<Record<string, { file: File; preview: string } | undefined>>({});
   const [productName, setProductName] = useState('');
+  const [isImported, setIsImported] = useState(false);
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
+  const setSlotFile = (type: string, f: File | undefined) => {
+    setSlots(prev => ({ ...prev, [type]: f ? { file: f, preview: URL.createObjectURL(f) } : undefined }));
+  };
+
+  const hasAnyImage = Object.values(slots).some(Boolean);
+
   const analyze = async () => {
-    if (!fileObj) return alert('Please upload a product packaging image.');
+    if (!hasAnyImage) return alert('Please upload at least the front panel image.');
     if (!productName.trim()) return alert('Please enter a product name.');
     setLoading(true);
-    setStatusMsg('Uploading image and running AI analysis (this can take 10-20 seconds)...');
+    setStatusMsg('Uploading image(s) and running AI analysis (this can take 10-20 seconds)...');
     try {
+      const images = IMAGE_SLOTS
+        .filter(s => slots[s.type])
+        .map(s => ({ file: slots[s.type]!.file, type: s.type }));
+
       const { scanId } = await startScan({
-        imageFile: fileObj,
+        images,
         productName: productName.trim(),
         category: 'Packaged food',
-        scanType: role.toUpperCase() as 'OFFICER' | 'MANUFACTURER' | 'SELLER' | 'CONSUMER'
+        scanType: role.toUpperCase() as 'OFFICER' | 'MANUFACTURER' | 'SELLER' | 'CONSUMER',
+        isImported
       });
       const backendResult = await getScanResult(scanId);
       const uiResult = mapToUiResult(backendResult);
@@ -459,38 +476,59 @@ function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
             style={{ padding: '10px 12px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}
           />
         </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontWeight: 500, fontSize: '13px' }}>
+          <input type="checkbox" checked={isImported} onChange={e => setIsImported(e.target.checked)} disabled={loading} style={{ width: 'auto' }} />
+          This product is imported (Country of Origin declaration will be checked)
+        </label>
       </div>
-      <label className="dropzone">
-        <input 
-          aria-label="Upload product label" 
-          type="file" 
-          accept="image/*" 
-          onChange={e => { 
-            const f = e.target.files?.[0]; 
-            if (f) { setFile(URL.createObjectURL(f)); setFileObj(f); }
-          }} 
-          disabled={loading} 
-        />
-        {file ? (
-          <img src={file} alt="Product label preview" />
-        ) : (
-          <>
-            <Upload size={32} />
-            <b>Upload product label or Principal Display Panel</b>
-            <span>Supported formats: JPG, PNG, WEBP (real AI analysis)</span>
-          </>
-        )}
-        {loading && (
-          <div className="scan-overlay">
-            <ScanGauge progress={60} />
-            <b>{statusMsg}</b>
-            <span>Evaluating against statutory Legal Metrology rules</span>
-          </div>
-        )}
-      </label>
-      {file && (
+
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '4px 0 12px' }}>
+        Many labels split info across panels — add the back and the tear-strip near the seal too for the most accurate result (only Front is required).
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
+        {IMAGE_SLOTS.map(slot => {
+          const current = slots[slot.type];
+          return (
+            <label key={slot.type} className="dropzone" style={{ height: '180px' }}>
+              <input
+                aria-label={`Upload ${slot.label}`}
+                type="file"
+                accept="image/*"
+                onChange={e => setSlotFile(slot.type, e.target.files?.[0])}
+                disabled={loading}
+              />
+              {current ? (
+                <img src={current.preview} alt={slot.label + ' preview'} />
+              ) : (
+                <>
+                  <Upload size={22} />
+                  <b style={{ fontSize: '13px' }}>{slot.label}{slot.required ? '' : ' (optional)'}</b>
+                  <span style={{ fontSize: '11px' }}>{slot.hint}</span>
+                </>
+              )}
+            </label>
+          );
+        })}
+      </div>
+
+      {loading && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '24px', background: 'var(--bg-sidebar)', borderRadius: 'var(--radius-md)', marginTop: '16px' }}>
+          <ScanGauge progress={60} />
+          <b style={{ color: '#fff', fontSize: '14px', textAlign: 'center' }}>{statusMsg}</b>
+          <span style={{ color: '#94a3b8', fontSize: '12px' }}>Evaluating against statutory Legal Metrology rules</span>
+        </div>
+      )}
+
+      {hasAnyImage && (
         <div className="scan-actions">
-          <button className="btn outline" onClick={() => { setFile(undefined); setFileObj(undefined); }} disabled={loading}>Remove Image</button>
+          <button
+            className="btn outline"
+            onClick={() => IMAGE_SLOTS.forEach(s => setSlotFile(s.type, undefined))}
+            disabled={loading}
+          >
+            Remove All Images
+          </button>
           <button className="btn primary" onClick={analyze} disabled={loading}>
             {loading ? <RefreshCw className="spin" size={16} /> : <Camera size={16} />} 
             {loading ? 'Analyzing...' : role === 'consumer' ? 'Check Product' : 'Run Compliance Scan'}
@@ -1161,6 +1199,136 @@ function ManufacturerDashboard({ onNewScan }: { onNewScan: () => void }) {
           </table>
         )}
       </div>
+    </>
+  );
+}
+
+function SellerBulkScan() {
+  const [pending, setPending] = useState<{ file: File; previewUrl: string; productName: string }[]>([]);
+  const [category, setCategory] = useState('Packaged food');
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [results, setResults] = useState<Awaited<ReturnType<typeof startBulkScan>>>([]);
+  const nav = useNavigate();
+
+  const handleFiles = (fileList: FileList | null) => {
+    if (!fileList) return;
+    const newItems = Array.from(fileList).map(file => ({
+      file,
+      previewUrl: URL.createObjectURL(file),
+      productName: file.name.replace(/\.[^.]+$/, '')
+    }));
+    setPending(prev => [...prev, ...newItems]);
+  };
+
+  const updateName = (idx: number, name: string) => {
+    setPending(prev => prev.map((p, i) => i === idx ? { ...p, productName: name } : p));
+  };
+
+  const removeItem = (idx: number) => {
+    setPending(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const runBulkCheck = async () => {
+    if (pending.length === 0) return alert('Add at least one image first.');
+    setRunning(true);
+    setResults([]);
+    setProgress({ done: 0, total: pending.length });
+    const items = pending.map(p => ({ imageFile: p.file, productName: p.productName || 'Untitled product' }));
+    const res = await startBulkScan(items, category, (done, total) => setProgress({ done, total }));
+    setResults(res);
+    setRunning(false);
+    setPending([]);
+  };
+
+  const viewReport = async (scanId?: string) => {
+    if (!scanId) return;
+    try {
+      const backendResult = await getScanResult(scanId);
+      const uiResult = mapToUiResult(backendResult);
+      nav('/app/report', { state: uiResult });
+    } catch (e) {
+      alert('Failed to load report: ' + (e as Error).message);
+    }
+  };
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">BATCH CATALOGUE CHECKER</span>
+          <h1>Bulk Listing Compliance Check</h1>
+          <p>Upload several product label photos at once — each one runs through the same real AI compliance pipeline as a single scan.</p>
+        </div>
+      </div>
+
+      <section className="panel">
+        <label style={{ display: 'block', marginBottom: '14px' }}>
+          Category (applies to this whole batch)
+          <select value={category} onChange={e => setCategory(e.target.value)} disabled={running}>
+            <option>Packaged food</option>
+            <option>Edible oil</option>
+            <option>Spices</option>
+            <option>Packaged goods</option>
+          </select>
+        </label>
+
+        <label className="dropzone" style={{ height: '120px' }}>
+          <input type="file" accept="image/*" multiple onChange={e => handleFiles(e.target.files)} disabled={running} />
+          <Upload size={26} />
+          <b>Add product label photos (select multiple at once)</b>
+          <span>Each photo becomes one item in the batch</span>
+        </label>
+
+        {pending.length > 0 && (
+          <div style={{ marginTop: '18px' }}>
+            <h3 style={{ fontSize: '14px', marginBottom: '10px' }}>{pending.length} item(s) queued</h3>
+            {pending.map((p, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px', borderBottom: '1px solid var(--border-light)' }}>
+                <img src={p.previewUrl} alt="" style={{ width: '44px', height: '44px', objectFit: 'cover', borderRadius: 'var(--radius-sm)' }} />
+                <input
+                  type="text"
+                  value={p.productName}
+                  onChange={e => updateName(i, e.target.value)}
+                  disabled={running}
+                  style={{ flex: 1, padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}
+                />
+                <button className="btn outline" style={{ padding: '6px 10px', fontSize: '12px' }} onClick={() => removeItem(i)} disabled={running}>Remove</button>
+              </div>
+            ))}
+            <button className="btn primary" style={{ marginTop: '16px' }} onClick={runBulkCheck} disabled={running}>
+              <ClipboardCheck size={16} /> {running ? `Scanning ${progress.done}/${progress.total}...` : `Run Bulk Check (${pending.length})`}
+            </button>
+          </div>
+        )}
+      </section>
+
+      {results.length > 0 && (
+        <section className="panel">
+          <h2>Batch Results</h2>
+          <table>
+            <thead>
+              <tr><th>Product</th><th>Score</th><th>Status</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              {results.map((r, i) => (
+                <tr key={i}>
+                  <td>{r.productName}</td>
+                  <td className="num">{r.success ? `${r.score}/100` : '—'}</td>
+                  <td>
+                    {r.success
+                      ? <span className={'badge ' + cls(r.status as Status)}>{r.status?.replace(/_/g, ' ')}</span>
+                      : <span className="badge bad">FAILED: {r.error}</span>}
+                  </td>
+                  <td>
+                    {r.success && <button className="linkbtn" onClick={() => viewReport(r.scanId)}>View Report</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
     </>
   );
 }
@@ -1847,6 +2015,87 @@ function Login() {
   );
 }
 
+function NotificationBell() {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<Awaited<ReturnType<typeof listNotifications>>>([]);
+  const [unread, setUnread] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    Promise.all([listNotifications(), getUnreadNotificationCount()])
+      .then(([n, c]) => { setItems(n); setUnread(c); })
+      .catch(e => console.error('Failed to load notifications:', e))
+      .finally(() => setLoading(false));
+  };
+
+  React.useEffect(() => {
+    load();
+    const interval = setInterval(load, 30000); // refresh every 30s
+    return () => clearInterval(interval);
+  }, []);
+
+  const toggle = () => {
+    setOpen(x => !x);
+    if (!open) load();
+  };
+
+  const handleItemClick = async (id: string, isRead: boolean) => {
+    if (!isRead) {
+      await markNotificationRead(id).catch(() => {});
+      load();
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    await markAllNotificationsRead().catch(() => {});
+    load();
+  };
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        onClick={toggle}
+        style={{ background: 'none', border: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', font: 'inherit', color: 'inherit' }}
+      >
+        🔔 {unread > 0 && <b className="num" style={{ color: 'var(--status-bad)' }}>{unread}</b>}
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: '28px', width: '340px', maxHeight: '420px', overflowY: 'auto',
+          background: '#fff', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)',
+          boxShadow: 'var(--shadow-hover)', zIndex: 9999
+        }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-light)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ fontSize: '13px' }}>Notifications</strong>
+            {unread > 0 && <button className="linkbtn" style={{ fontSize: '12px' }} onClick={handleMarkAllRead}>Mark all read</button>}
+          </div>
+          {loading ? (
+            <p style={{ padding: '16px', fontSize: '13px', color: 'var(--text-muted)' }}>Loading...</p>
+          ) : items.length === 0 ? (
+            <p style={{ padding: '16px', fontSize: '13px', color: 'var(--text-muted)' }}>No notifications yet.</p>
+          ) : (
+            items.map(n => (
+              <div
+                key={n.id}
+                onClick={() => handleItemClick(n.id, n.read)}
+                style={{
+                  padding: '12px 16px', borderBottom: '1px solid var(--border-light)', cursor: 'pointer',
+                  background: n.read ? '#fff' : 'var(--brand-soft)'
+                }}
+              >
+                <strong style={{ display: 'block', fontSize: '13px', marginBottom: '2px' }}>{n.title}</strong>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>{n.message}</p>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{n.createdAt}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AppShell() {
   const nav = useNavigate();
   const user = JSON.parse(localStorage.getItem('lg-user') || 'null') as { role: Role; name: string; userId?: string; organizationId?: string | null } | null;
@@ -1871,7 +2120,7 @@ function AppShell() {
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
       { label: 'New Inspection', path: 'scan', icon: <Camera size={17} /> },
       { label: 'Inspection History', path: 'history', icon: <HistoryIcon size={17} /> },
-      { label: 'Complaints', path: 'complaints', icon: <MessageSquare size={17} />, badge: complaints.length },
+      { label: 'Complaints', path: 'complaints', icon: <MessageSquare size={17} />, badge: complaints.filter(c => c.status !== 'RESOLVED').length },
     ],
     manufacturer: [
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
@@ -1882,6 +2131,7 @@ function AppShell() {
     seller: [
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
       { label: 'Listing Check', path: 'scan', icon: <Camera size={17} /> },
+      { label: 'Bulk Check', path: 'bulk-check', icon: <ClipboardCheck size={17} /> },
       { label: 'Listing History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
     consumer: [
@@ -1914,6 +2164,8 @@ function AppShell() {
       };
       setScanResult(updatedResult);
       alert(`Status updated to: ${newStatus.replace(/_/g, ' ')}`);
+      setScanResult(undefined);
+      nav('/app');
     } catch (e) {
       alert('Failed to update status: ' + (e as Error).message);
     }
@@ -1953,7 +2205,7 @@ function AppShell() {
           <span>ACTIVE USER: <strong>{user.name}</strong> ({labels[user.role]})</span>
           <span style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <span className="badge good">ONLINE</span>
-            <span>🔔 <b className="num">2</b></span>
+            <NotificationBell />
           </span>
         </header>
 
@@ -2059,6 +2311,7 @@ function AppShell() {
                 </>
               )} />
               <Route path="history" element={<HistoryPage role="seller" />} />
+              <Route path="bulk-check" element={<SellerBulkScan />} />
             </>
           )}
 

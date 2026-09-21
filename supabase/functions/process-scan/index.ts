@@ -35,29 +35,34 @@ Deno.serve(async (req) => {
 
     await supabase.from('scans').update({ status: 'PROCESSING' }).eq('id', scanId);
 
-    // ---- 1. Load scan + product image ----
+    // ---- 1. Load scan + ALL product images (front/back/strip, etc.) ----
     const { data: scan, error: scanErr } = await supabase
       .from('scans').select('*, products(*)').eq('id', scanId).single();
     if (scanErr || !scan) throw new Error('Scan not found: ' + scanErr?.message);
 
     const { data: images } = await supabase
-      .from('product_images').select('*').eq('product_id', scan.product_id).order('created_at', { ascending: false }).limit(1);
-    const image = images?.[0];
-    if (!image) throw new Error('No product image found for this scan');
+      .from('product_images').select('*').eq('product_id', scan.product_id).order('created_at', { ascending: true });
+    if (!images || images.length === 0) throw new Error('No product image found for this scan');
 
-    const { data: signedUrlData } = await supabase.storage
-      .from('product-images').createSignedUrl(image.storage_path, 300);
-    const imageUrl = signedUrlData?.signedUrl;
-    if (!imageUrl) throw new Error('Could not sign image URL');
+    const imageParts: { mime_type: string; data: string; imageType: string }[] = [];
+    for (const image of images) {
+      const { data: signedUrlData } = await supabase.storage
+        .from('product-images').createSignedUrl(image.storage_path, 300);
+      const imageUrl = signedUrlData?.signedUrl;
+      if (!imageUrl) continue;
 
-    const imageResp = await fetch(imageUrl);
-    const imageBuffer = await imageResp.arrayBuffer();
-    const imageBase64 = base64Encode(imageBuffer);
-    const mimeType = imageResp.headers.get('content-type') || 'image/jpeg';
+      const imageResp = await fetch(imageUrl);
+      const imageBuffer = await imageResp.arrayBuffer();
+      const imageBase64 = base64Encode(imageBuffer);
+      const mimeType = imageResp.headers.get('content-type') || 'image/jpeg';
+      imageParts.push({ mime_type: mimeType, data: imageBase64, imageType: image.image_type ?? 'LABEL' });
+    }
+    if (imageParts.length === 0) throw new Error('Could not load any product images');
 
-    // ---- 2. Gemini: read the image AND extract structured declarations
-    //          in a single multimodal call (no separate OCR step) ----
-    const geminiPrompt = buildGeminiPrompt();
+    // ---- 2. Gemini: read ALL images together (front/back/strip are the SAME
+    //          product) and extract ONE combined set of declarations,
+    //          merging info that's split across different panels ----
+    const geminiPrompt = buildGeminiPrompt(imageParts.map(p => p.imageType));
     const geminiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -67,7 +72,7 @@ Deno.serve(async (req) => {
           contents: [{
             parts: [
               { text: geminiPrompt },
-              { inline_data: { mime_type: mimeType, data: imageBase64 } }
+              ...imageParts.map(p => ({ inline_data: { mime_type: p.mime_type, data: p.data } }))
             ]
           }],
           generationConfig: {
@@ -120,7 +125,7 @@ Deno.serve(async (req) => {
     // ---- 3. Deterministic rule engine (NO LLM) ----
     const { data: rulesData } = await supabase.from('rules').select('*').eq('active', true);
     const rules: Rule[] = (rulesData ?? []) as Rule[];
-    const violations = runRuleEngine(declarations, rules);
+    const violations = runRuleEngine(declarations, rules, Boolean(scan.products?.is_imported));
     const score = computeScore(rules.length, violations);
     const status = statusFromViolations(violations);
 
@@ -154,6 +159,17 @@ Deno.serve(async (req) => {
       metadata: { score, status, violationCount: violations.length }
     });
 
+    // Real in-app notification for the person who ran the scan
+    await supabase.from('notifications').insert({
+      user_id: scan.user_id,
+      title: status === 'COMPLIANT' ? 'Scan complete: fully compliant' : `Scan complete: ${violations.length} issue(s) found`,
+      message: status === 'COMPLIANT'
+        ? `${scan.products?.name ?? 'Your product'} passed all Legal Metrology checks with a score of ${score}/100.`
+        : `${scan.products?.name ?? 'Your product'} scored ${score}/100 with ${violations.length} declaration issue(s) found.`,
+      type: status === 'COMPLIANT' ? 'SUCCESS' : 'WARNING',
+      read: false
+    });
+
     return json({ scanId, status, score, violations, declarations }, 200, cors);
   } catch (err) {
     console.error(err);
@@ -161,11 +177,24 @@ Deno.serve(async (req) => {
   }
 });
 
-function buildGeminiPrompt(): string {
-  return `You are a packaging information extraction system for Indian Legal Metrology compliance.
+function buildGeminiPrompt(imageTypes: string[]): string {
+  const multiImageNote = imageTypes.length > 1
+    ? `\nYou have been given ${imageTypes.length} images (${imageTypes.join(', ')}) — these are DIFFERENT
+PHOTOS OF THE SAME PRODUCT PACKAGE, not different products. Indian packaging commonly splits
+declarations across panels: the front panel usually shows the brand and product name, the back
+panel usually shows manufacturer address and consumer care, and a separate tear-strip near the
+seal (where the package is torn open) often shows the MRP, net quantity, and batch/manufacturing
+date printed separately from the rest. COMBINE information found across ALL provided images into
+ONE single merged set of field values below — if a field appears in only one image, still include
+it; if the same field appears differently in two images (e.g. slightly different framing of the
+same text), use the clearest/most complete reading.\n`
+    : '';
 
-Look carefully at the provided package image and read every piece of visible text on it (this is
-your own OCR step — do not skip reading small print).
+  return `You are a packaging information extraction system for Indian Legal Metrology compliance.
+${multiImageNote}
+Look carefully at the provided package image(s) and read every piece of visible text on them (this
+is your own OCR step — do not skip reading small print, and check the tear-strip area near any
+perforation or seal line specifically for MRP/batch info if a strip image was provided).
 
 Extract ONLY information that is visibly present on the package. Never invent or infer missing
 declarations.
@@ -187,6 +216,8 @@ FIELD DEFINITIONS — read carefully, these fields are commonly confused:
   + 540 g ice cream" style combo), extract the value exactly as printed, do not simplify or split it.
   Preserve exact wording including any parenthetical units — do not "correct" apparent
   contradictions yourself (e.g. "1 Litre (900 mL)") — the rule engine downstream checks for those.
+- "mrp": check ALL provided images for this — it is very commonly printed on a separate tear-strip
+  near the package seal rather than on the main front/back panels.
 
 Return ONLY a JSON object (no markdown, no preamble, no code fences) with exactly this shape:
 

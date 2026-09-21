@@ -55,29 +55,76 @@ function checkNetQuantityConsistency(value: string): { ok: boolean; explanation?
   return { ok: true };
 }
 
-// When a manufacturer/packer/importer field is missing, check whether the
-// package instead declared only a "marketed_by" entity — legally distinct
-// under the Legal Metrology (Packaged Commodities) Rules — and produce a
-// more precise explanation than a generic "not found".
-function explainMissingResponsibleEntity(rule: Rule, declarations: Declaration[]): string {
-  const generic = `The package lacks a visible, unambiguous declaration for "${rule.rule_name}".`;
+// ============================================================
+// FORMAT / COMPLETENESS VALIDATORS
+// These run on fields that ARE present, to catch declarations that exist
+// but are invalid or incomplete — e.g. an address with no PIN code, a
+// consumer care line with no real phone/email, an unparseable MRP.
+// ============================================================
 
-  if (rule.field !== 'manufacturer' && rule.field !== 'packer' && rule.field !== 'importer') {
-    return generic;
-  }
-
-  const marketedBy = findDeclaration(declarations, 'marketed_by');
-  if (marketedBy?.present && marketedBy.value) {
-    return `The package declares "${marketedBy.value}" as the marketer/distributor, but does not separately identify the actual ${rule.field}. Under the Legal Metrology (Packaged Commodities) Rules, a "Marketed by" / "Distributed by" declaration alone does not satisfy the requirement to identify the manufacturer, packer, or importer — these are legally distinct roles.`;
-  }
-
-  return generic;
+function hasPincode(address: string): boolean {
+  // Indian PIN codes are exactly 6 digits, not part of a longer number run
+  return /(?<!\d)\d{6}(?!\d)/.test(address);
 }
 
-export function runRuleEngine(declarations: Declaration[], rules: Rule[]): Violation[] {
+function hasValidContact(text: string): boolean {
+  const phonePattern = /(\+?91[-\s]?)?(1800[-\s]?\d{2,3}[-\s]?\d{3,4}|[6-9]\d{9})/;
+  const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+  return phonePattern.test(text) || emailPattern.test(text);
+}
+
+function hasValidMrp(text: string): boolean {
+  // Must contain a real numeric amount, not just currency symbols or stray text
+  return /\d+(\.\d{1,2})?/.test(text);
+}
+
+function hasValidDateFormat(text: string): boolean {
+  const numericPattern = /\b(0?[1-9]|1[0-2])[\/\-\s.](\d{2}|\d{4})\b/; // MM/YYYY, MM-YY etc
+  const monthNamePattern = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+\d{2,4}\b/i;
+  return numericPattern.test(text) || monthNamePattern.test(text);
+}
+
+function hasValidQuantityFormat(text: string): boolean {
+  // A number followed by a recognized unit
+  return /\d+(\.\d+)?\s*(g|kg|mg|ml|l|litre|liter|gm|gram|grams|kilogram|piece|pcs|pc|no\.?)\b/i.test(text);
+}
+
+const FIELD_VALIDATORS: Record<string, { check: (v: string) => boolean; expected: string; issue: string }> = {
+  manufacturer: {
+    check: hasPincode,
+    expected: 'Full address including a 6-digit PIN code',
+    issue: 'a 6-digit PIN code'
+  },
+  consumer_care: {
+    check: hasValidContact,
+    expected: 'A valid phone number or email address',
+    issue: 'a recognizable phone number or email address'
+  },
+  mrp: {
+    check: hasValidMrp,
+    expected: 'A clear numeric price (e.g. ₹120)',
+    issue: 'a clear, readable numeric price'
+  },
+  manufacturing_date: {
+    check: hasValidDateFormat,
+    expected: 'A clear month and year (e.g. 09/2026 or Sep 2026)',
+    issue: 'a clear month/year format'
+  },
+  net_quantity: {
+    check: hasValidQuantityFormat,
+    expected: 'A number followed by a standard unit (e.g. 500 g, 1 L)',
+    issue: 'a number with a recognized unit of measure'
+  },
+};
+
+export function runRuleEngine(declarations: Declaration[], rules: Rule[], isImported: boolean): Violation[] {
   const violations: Violation[] = [];
 
   for (const rule of rules) {
+    // Country of Origin (Rule 6(1)(aa)) is only legally required for imported
+    // products — skip it entirely for domestic products.
+    if (rule.field === 'country_of_origin' && !isImported) continue;
+
     const decl = findDeclaration(declarations, rule.field);
 
     if (rule.validation_type === 'REQUIRED_FIELD') {
@@ -90,7 +137,23 @@ export function runRuleEngine(declarations: Declaration[], rules: Rule[]): Viola
           expected_value: `${rule.rule_name} must be clearly declared`,
           severity: rule.severity,
           status: 'POTENTIAL',
-          explanation: explainMissingResponsibleEntity(rule, declarations)
+          explanation: `The package lacks a visible, unambiguous declaration for "${rule.rule_name}".`
+        });
+        continue;
+      }
+
+      // Field IS present — check it's actually valid/complete, not just non-empty
+      const validator = FIELD_VALIDATORS[rule.field];
+      if (validator && !validator.check(decl.value)) {
+        violations.push({
+          rule_id: rule.id,
+          rule_code: rule.rule_code,
+          field: rule.field,
+          detected_value: decl.value,
+          expected_value: validator.expected,
+          severity: 'LOW',
+          status: 'POTENTIAL',
+          explanation: `"${decl.value}" is printed for ${rule.rule_name}, but it does not appear to include ${validator.issue}.`
         });
       }
       continue;

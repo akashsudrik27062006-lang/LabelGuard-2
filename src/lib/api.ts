@@ -4,29 +4,36 @@ import { supabase } from './supabase';
 // SCAN PIPELINE
 // ============================================================
 export async function startScan(opts: {
-  imageFile: File;
+  imageFile?: File; // backward-compatible single-image path (e.g. bulk scan)
+  images?: { file: File; type: 'FRONT' | 'BACK' | 'STRIP' }[]; // new multi-image path
   productName: string;
   category: string;
   manufacturer?: string;
   scanType: 'MANUFACTURER' | 'SELLER' | 'OFFICER' | 'CONSUMER';
+  isImported?: boolean;
 }) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
+  const imageList = opts.images ?? (opts.imageFile ? [{ file: opts.imageFile, type: 'FRONT' as const }] : []);
+  if (imageList.length === 0) throw new Error('At least one image is required');
+
   const { data: product, error: productErr } = await supabase
     .from('products')
-    .insert({ name: opts.productName, category: opts.category, manufacturer: opts.manufacturer, created_by: user.id })
+    .insert({ name: opts.productName, category: opts.category, manufacturer: opts.manufacturer, created_by: user.id, is_imported: opts.isImported ?? false })
     .select().single();
   if (productErr) throw productErr;
 
-  const path = `${user.id}/${product.id}/${Date.now()}-${opts.imageFile.name}`;
-  const { error: uploadErr } = await supabase.storage
-    .from('product-images').upload(path, opts.imageFile);
-  if (uploadErr) throw uploadErr;
+  for (const img of imageList) {
+    const path = `${user.id}/${product.id}/${img.type}-${Date.now()}-${img.file.name}`;
+    const { error: uploadErr } = await supabase.storage
+      .from('product-images').upload(path, img.file);
+    if (uploadErr) throw uploadErr;
 
-  await supabase.from('product_images').insert({
-    product_id: product.id, storage_path: path, image_type: 'LABEL', uploaded_by: user.id
-  });
+    await supabase.from('product_images').insert({
+      product_id: product.id, storage_path: path, image_type: img.type, uploaded_by: user.id
+    });
+  }
 
   const { data: scan, error: scanErr } = await supabase
     .from('scans')
@@ -83,12 +90,17 @@ export function mapToUiResult(backendResult: {
   violations: any[];
 }) {
   const { scan, declarations, violations } = backendResult;
+  const isImported = Boolean(scan.products?.is_imported);
 
   const fields: Record<string, string> = {};
   for (const d of declarations) {
     const label = FIELD_LABELS[d.field];
     if (!label) continue;
-    fields[label] = d.present && d.value ? d.value : 'Not detected';
+    fields[label] = d.present && d.value
+      ? d.value
+      : d.field === 'country_of_origin' && !isImported
+        ? 'Not required (domestic product)'
+        : 'Not detected';
   }
 
   const mappedViolations = violations.map((v: any) => ({
@@ -231,6 +243,21 @@ export async function submitComplaint(c: {
     status: 'SUBMITTED'
   }).select().single();
   if (error) throw error;
+
+  // Notify every officer that a new complaint needs attention
+  const { data: officers } = await supabase.from('profiles').select('id').eq('role', 'OFFICER');
+  if (officers && officers.length > 0) {
+    await supabase.from('notifications').insert(
+      officers.map(o => ({
+        user_id: o.id,
+        title: 'New consumer complaint filed',
+        message: `A grievance was filed for "${c.productName}" — ${c.issueType}.`,
+        type: 'INFO',
+        read: false
+      }))
+    );
+  }
+
   return data;
 }
 
@@ -263,23 +290,45 @@ export async function listComplaintsReal() {
 // Officer starts looking into a complaint (SUBMITTED -> UNDER_INVESTIGATION)
 export async function startComplaintInvestigation(complaintId: string) {
   const { data: { user } } = await supabase.auth.getUser();
-  const { error } = await supabase.from('complaints').update({
+  const { data: complaint, error } = await supabase.from('complaints').update({
     status: 'UNDER_INVESTIGATION',
     assigned_officer: user?.id,
     investigated_at: new Date().toISOString()
-  }).eq('id', complaintId);
+  }).eq('id', complaintId).select('consumer_id, products(name)').single();
   if (error) throw error;
+
+  if (complaint?.consumer_id) {
+    await supabase.from('notifications').insert({
+      user_id: complaint.consumer_id,
+      title: 'Your grievance is under review',
+      message: `A Legal Metrology Officer has started investigating your complaint about "${(complaint as any).products?.name ?? 'your product'}".`,
+      type: 'INFO',
+      read: false
+    });
+  }
 }
 
 // Officer closes a complaint with a verdict (-> RESOLVED, with CONFIRMED or REJECTED outcome)
 export async function resolveComplaint(complaintId: string, outcome: 'CONFIRMED' | 'REJECTED', remarks: string) {
-  const { error } = await supabase.from('complaints').update({
+  const { data: complaint, error } = await supabase.from('complaints').update({
     status: 'RESOLVED',
     outcome,
     officer_remarks: remarks,
     resolved_at: new Date().toISOString()
-  }).eq('id', complaintId);
+  }).eq('id', complaintId).select('consumer_id, products(name)').single();
   if (error) throw error;
+
+  if (complaint?.consumer_id) {
+    await supabase.from('notifications').insert({
+      user_id: complaint.consumer_id,
+      title: outcome === 'CONFIRMED' ? 'Grievance accepted' : 'Grievance rejected',
+      message: outcome === 'CONFIRMED'
+        ? `Your complaint about "${(complaint as any).products?.name ?? 'your product'}" was confirmed. Officer's note: ${remarks}`
+        : `Your complaint about "${(complaint as any).products?.name ?? 'your product'}" was reviewed and rejected. Officer's note: ${remarks}`,
+      type: outcome === 'CONFIRMED' ? 'SUCCESS' : 'WARNING',
+      read: false
+    });
+  }
 }
 
 // ============================================================
@@ -309,15 +358,86 @@ export async function getDashboardStats() {
 export async function getEvidenceImageUrl(productId: string): Promise<string | null> {
   const { data: images } = await supabase
     .from('product_images')
-    .select('storage_path')
+    .select('storage_path, image_type')
     .eq('product_id', productId)
-    .order('created_at', { ascending: false })
-    .limit(1);
-  const image = images?.[0];
-  if (!image) return null;
+    .order('created_at', { ascending: true });
+  if (!images || images.length === 0) return null;
+
+  // Prefer the FRONT image for evidence display; fall back to whatever's there
+  const image = images.find(i => i.image_type === 'FRONT') ?? images[0];
 
   const { data: signed } = await supabase.storage
     .from('product-images')
     .createSignedUrl(image.storage_path, 600);
   return signed?.signedUrl ?? null;
+}
+
+// ============================================================
+// NOTIFICATIONS — real bell icon data
+// ============================================================
+export async function listNotifications() {
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (error) throw error;
+  return (data ?? []).map((n: any) => ({
+    id: n.id as string,
+    title: n.title as string,
+    message: n.message as string,
+    type: n.type as string,
+    read: n.read as boolean,
+    createdAt: new Date(n.created_at).toLocaleString('en-IN'),
+  }));
+}
+
+export async function getUnreadNotificationCount(): Promise<number> {
+  const { count, error } = await supabase
+    .from('notifications')
+    .select('*', { count: 'exact', head: true })
+    .eq('read', false);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function markNotificationRead(id: string) {
+  const { error } = await supabase.from('notifications').update({ read: true }).eq('id', id);
+  if (error) throw error;
+}
+
+export async function markAllNotificationsRead() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return;
+  const { error } = await supabase.from('notifications').update({ read: true }).eq('user_id', user.id).eq('read', false);
+  if (error) throw error;
+}
+
+// ============================================================
+// SELLER BULK SCAN — scan several catalogue images in one batch
+// ============================================================
+export async function startBulkScan(
+  items: { imageFile: File; productName: string }[],
+  category: string,
+  onProgress?: (done: number, total: number) => void
+) {
+  const results: { productName: string; success: boolean; status?: string; score?: number; error?: string; scanId?: string }[] = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    try {
+      const { scanId, status, score } = await startScan({
+        imageFile: item.imageFile,
+        productName: item.productName,
+        category,
+        scanType: 'SELLER'
+      });
+      results.push({ productName: item.productName, success: true, status, score, scanId });
+    } catch (e) {
+      results.push({ productName: item.productName, success: false, error: (e as Error).message });
+    }
+    onProgress?.(i + 1, items.length);
+  }
+
+  return results;
 }
