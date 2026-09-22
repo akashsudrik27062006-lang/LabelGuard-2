@@ -130,7 +130,7 @@
       recommendation: `Correct the "${v.rules?.rule_name ?? v.field}" declaration to meet statutory requirements.`
     }));
 
-    const product = {
+        const product = {
       id: scan.product_id,
       name: scan.products?.name ?? 'Unknown Product',
       manufacturer: fields['Manufacturer'] ?? scan.products?.manufacturer ?? 'Not detected',
@@ -138,6 +138,8 @@
       image: '📦',
       status: scan.status,
       fields,
+      productGroup: scan.products?.product_group as string | undefined,
+      versionLabel: scan.products?.version_label as string | undefined,
     };
 
     return {
@@ -641,3 +643,23 @@
     }).eq('id', violationId);
     if (error) throw error;
   }
+
+  export async function listManufacturerChecks() {
+  const { data: scans, error } = await supabase
+    .from('scans')
+    .select('id, product_id, status, score, started_at, completed_at, violations(id), products(name, version_label, product_group)')
+    .not('status', 'in', '("UPLOADED","PROCESSING")')
+    .order('started_at', { ascending: false });
+  if (error) throw error;
+  return (scans ?? []).map((s: any) => ({
+    scanId: s.id,
+    productId: s.product_id,
+    productName: s.products?.name ?? 'Unknown Product',
+    versionLabel: s.products?.version_label ?? 'v1.0',
+    productGroup: s.products?.product_group ?? '',
+    score: s.score ?? 0,
+    status: s.status as string,
+    issues: (s.violations ?? []).length,
+    date: new Date(s.completed_at ?? s.started_at).toLocaleDateString('en-IN'),
+  }));
+}

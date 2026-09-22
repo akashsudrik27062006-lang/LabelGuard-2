@@ -10,8 +10,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from './lib/supabase';
-import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, getAllEvidenceImages, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan, listProductGroups, listVersionsForGroup, compareVersions, listRecommendations, setManufacturerAction, nextVersionLabel } from './lib/api';
-
+import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, getAllEvidenceImages, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan, listProductGroups, listVersionsForGroup, compareVersions, listRecommendations, setManufacturerAction, nextVersionLabel, listManufacturerChecks } from './lib/api';
 type DbProfile = {
   id: string;
   full_name: string;
@@ -48,6 +47,8 @@ type Product = {
   status: Status;
   location?: string;
   confidence?: Record<string, number>;
+  productGroup?: string;
+  versionLabel?: string;
 };
 
 type Result = {
@@ -1169,20 +1170,34 @@ function productStatusBadgeCls(status: string) {
   return '';
 }
 
-function ProductsArtwork() {
+function ProductsArtwork({ setScanResult }: {
+  setScanResult: (r: Result | undefined) => void
+}) {
   const nav = useNavigate();
   const [groups, setGroups] = useState<Awaited<ReturnType<typeof listProductGroups>>>([]);
   const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string>();
+  const [versionsByGroup, setVersionsByGroup] = useState<Record<string, Awaited<ReturnType<typeof listVersionsForGroup>>>>({});
 
   const load = () => {
     setLoading(true);
-    listProductGroups()
-      .then(setGroups)
-      .catch(e => alert('Failed to load products: ' + (e as Error).message))
-      .finally(() => setLoading(false));
+    listProductGroups().then(setGroups).catch(e => alert('Failed to load products: ' + (e as Error).message)).finally(() => setLoading(false));
+  };
+  React.useEffect(() => { load(); }, []);
+
+  const toggleExpand = async (productGroup: string) => {
+    if (expanded === productGroup) { setExpanded(undefined); return; }
+    setExpanded(productGroup);
+    if (!versionsByGroup[productGroup]) {
+      const vs = await listVersionsForGroup(productGroup);
+      setVersionsByGroup(prev => ({ ...prev, [productGroup]: vs }));
+    }
   };
 
-  React.useEffect(() => { load(); }, []);
+  const openVersionReport = async (scanId: string) => {
+    const backendResult = await getScanResult(scanId);
+    nav('/app/report', { state: mapToUiResult(backendResult) });
+  };
 
   return (
     <>
@@ -1190,41 +1205,67 @@ function ProductsArtwork() {
         <div>
           <span className="eyebrow">ARTWORK MANAGEMENT</span>
           <h1>Products &amp; Artwork</h1>
-          <p>Every product line you've scanned, grouped with all its artwork versions.</p>
+          <p>Every product line, grouped with all its artwork versions.</p>
         </div>
-        <button className="btn primary" onClick={() => nav('/app/scan')}><Camera size={16} /> Check New Artwork</button>
+        <button className="btn primary" onClick={() => { setScanResult(undefined); nav('/app/scan'); }}><Camera size={16} /> Check New Artwork</button>
       </div>
 
       <section className="panel">
         {loading ? (
           <p style={{ padding: '20px' }}>Loading...</p>
         ) : groups.length === 0 ? (
-          <p style={{ padding: '20px' }}>No products yet. Run "Package Check" to check your first artwork.</p>
+          <p style={{ padding: '20px' }}>No products yet. Run "Start Packaging Compliance Check" to check your first artwork.</p>
         ) : (
           <table>
             <thead>
-              <tr>
-                <th>Product</th><th>Category</th><th>Current Version</th><th>Versions</th>
-                <th>Score</th><th>Status</th><th>Issues</th><th>Actions</th>
-              </tr>
+              <tr><th>Product</th><th>Category</th><th>Latest Version</th><th>Versions</th><th>Score</th><th>Status</th><th>Issues</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {groups.map(g => (
-                <tr key={g.productGroup}>
-                  <td><strong>{g.name}</strong></td>
-                  <td>{g.category}</td>
-                  <td className="num">{g.currentVersionLabel}</td>
-                  <td className="num">{g.versionCount}</td>
-                  <td className="num">{g.score ?? '—'}</td>
-                  <td><span className={'badge ' + productStatusBadgeCls(g.status)}>{g.status}</span></td>
-                  <td className="num">{g.issues}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      <button className="linkbtn" onClick={() => nav('/app/scan', { state: { productGroup: g.productGroup, lockedProductName: g.name } })}>Upload New Version</button>
-                      <button className="linkbtn" onClick={() => nav('/app/version-comparison', { state: { productGroup: g.productGroup } })}>Compare</button>
-                    </div>
-                  </td>
-                </tr>
+                <React.Fragment key={g.productGroup}>
+                  <tr>
+                    <td><strong>{g.name}</strong></td>
+                    <td>{g.category}</td>
+                    <td className="num">{g.currentVersionLabel}</td>
+                    <td className="num">{g.versionCount}</td>
+                    <td className="num">{g.score ?? '—'}</td>
+                    <td><span className={'badge ' + productStatusBadgeCls(g.status)}>{g.status}</span></td>
+                    <td className="num">{g.issues}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <button className="linkbtn" onClick={() => toggleExpand(g.productGroup)}>{expanded === g.productGroup ? 'Hide Versions' : 'View Versions'}</button>
+                        <button className="linkbtn" onClick={() => { setScanResult(undefined); nav('/app/scan', { state: { productGroup: g.productGroup, lockedProductName: g.name } }); }}>Upload New Version</button>
+                        {g.versionCount > 1 && <button className="linkbtn" onClick={() => nav('/app/version-comparison', { state: { productGroup: g.productGroup } })}>Compare</button>}
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded === g.productGroup && (
+                    <tr>
+                      <td colSpan={8} style={{ padding: 0 }}>
+                        <div style={{ padding: '14px 20px', background: 'var(--bg-subtle)' }}>
+                          {!versionsByGroup[g.productGroup] ? (
+                            <p style={{ fontSize: '13px' }}>Loading versions...</p>
+                          ) : (
+                            <table>
+                              <thead><tr><th>Version</th><th>Date</th><th>Score</th><th>Status</th><th>Action</th></tr></thead>
+                              <tbody>
+                                {versionsByGroup[g.productGroup].map(v => (
+                                  <tr key={v.productId}>
+                                    <td className="num">{v.versionLabel}</td>
+                                    <td className="num">{v.date ?? '—'}</td>
+                                    <td className="num">{v.score ?? '—'}</td>
+                                    <td><span className={'badge ' + (v.status === 'COMPLIANT' ? 'good' : v.status === 'NOT CHECKED' ? '' : 'bad')}>{v.status.replace(/_/g, ' ')}</span></td>
+                                    <td>{v.scanId && <button className="linkbtn" onClick={() => openVersionReport(v.scanId!)}>View Report</button>}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -1234,7 +1275,9 @@ function ProductsArtwork() {
   );
 }
 
-function Recommendations() {
+function Recommendations({ setScanResult }: {
+  setScanResult: (r: Result | undefined) => void
+}) {
   const nav = useNavigate();
   const location = useLocation();
   const filterGroup = (location.state as { productGroup?: string } | null)?.productGroup;
@@ -1299,7 +1342,10 @@ function Recommendations() {
                 {row.manufacturerAction && <span className={'badge ' + (row.manufacturerAction === 'CORRECTED' ? 'good' : 'warn')}>{row.manufacturerAction}</span>}
                 <button className="btn outline" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => act(row.violationId, 'REVIEWED')} disabled={busyId === row.violationId}>Mark as Reviewed</button>
                 <button className="btn outline" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => act(row.violationId, 'CORRECTED')} disabled={busyId === row.violationId}>Mark as Corrected</button>
-                <button className="btn primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => nav('/app/scan', { state: { productGroup: row.productGroup, lockedProductName: row.productName } })}>
+                <button className="btn primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => {
+                  setScanResult(undefined);
+                  nav('/app/scan', { state: { productGroup: row.productGroup, lockedProductName: row.productName } });
+                }}>
                   <RefreshCw size={13} /> Re-check Artwork
                 </button>
               </div>
@@ -1427,63 +1473,168 @@ function VersionComparison() {
 }
 
 
+function ManufacturerResultView({ result, previousVersion, nav, setScanResult }: {
+  result: Result;
+  previousVersion?: { label: string; score: number; issues: number };
+  nav: ReturnType<typeof useNavigate>;
+  setScanResult: (r: Result | undefined) => void;
+}) {
+  const productGroup = result.product.productGroup;
+  const versionLabel = result.product.versionLabel ?? 'v1.0';
+
+  return (
+    <div className="result">
+      <div className="result-head">
+        <div className="product-art">{result.product.image}</div>
+        <div>
+          <span className="eyebrow">COMPLIANCE RESULT · {versionLabel}</span>
+          <h1>{result.product.name}</h1>
+          <p>{result.product.category}</p>
+        </div>
+        <Seal score={result.score} statusLabel={result.status} tone={cls(result.status) as 'good' | 'warn' | 'bad'} />
+      </div>
+
+      {previousVersion && (
+        <div className="panel" style={{ margin: '18px 0', padding: '16px', background: 'var(--brand-soft)', border: '1px solid rgba(37,99,235,0.2)' }}>
+          <span className="eyebrow">REVISED ARTWORK SUBMISSION</span>
+          <p style={{ margin: '6px 0 0' }}>
+            Previous version: <b>{previousVersion.label}</b> · Previous score: <b>{previousVersion.score}/100</b> · Previous issues: <b>{previousVersion.issues}</b>
+            {' → '}Now <b>{versionLabel}</b>: {result.score}/100, {result.violations.length} issue(s)
+          </p>
+        </div>
+      )}
+
+      <section className="panel" style={{ margin: '18px 0' }}>
+        <h2>Extracted Declarations</h2>
+        <div className="fields">
+          {Object.entries(result.product.fields).map(([k, val]) => (
+            <div key={k}>
+              <span>{k}</span>
+              <strong className={val === 'Not detected' ? 'missing' : 'num'}>{val}</strong>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel" style={{ margin: '18px 0' }}>
+        <h2>Findings, Evidence &amp; Recommended Corrections</h2>
+        {result.violations.length === 0 ? (
+          <div className="empty"><CheckCircle2 /> No statutory declaration violations detected on this artwork.</div>
+        ) : (
+          result.violations.map((v, i) => (
+            <article key={i} className="panel" style={{ margin: '14px 0', padding: '20px', background: 'var(--bg-subtle)', borderLeft: '4px solid var(--status-bad)' }}>
+              <span className="badge bad">{v.section}</span>
+              <h3 style={{ margin: '8px 0' }}>{v.requirement}</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', margin: '10px 0' }}>
+                <div style={{ background: '#fff', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-light)' }}>
+                  <small style={{ color: 'var(--text-muted)' }}>Detected</small><br /><strong style={{ color: 'var(--status-bad)' }}>{v.detectedValue}</strong>
+                </div>
+                <div style={{ background: '#fff', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-light)' }}>
+                  <small style={{ color: 'var(--text-muted)' }}>Expected</small><br /><strong style={{ color: 'var(--status-good)' }}>{v.expectedValue}</strong>
+                </div>
+              </div>
+              <p style={{ margin: '6px 0', fontSize: '13px' }}><b>Why this fails:</b> {v.explanation}</p>
+              <p style={{ margin: '6px 0', fontSize: '13px', color: 'var(--text-muted)' }}><b>Rule:</b> {v.ruleRef.law} — {v.ruleRef.section}</p>
+              <p style={{ margin: '6px 0', fontSize: '13px', color: 'var(--brand-primary)' }}><b>Recommended correction:</b> {v.recommendation}</p>
+            </article>
+          ))
+        )}
+      </section>
+
+      <div className="result-actions" style={{ justifyContent: 'flex-start', gap: '10px', flexWrap: 'wrap' }}>
+        <button className="btn outline" onClick={() => nav('/app/recommendations', { state: { productGroup } })}>
+          <AlertTriangle size={16} /> View Correction Recommendations
+        </button>
+        {productGroup && (
+          <button className="btn outline" onClick={() => nav('/app/version-comparison', { state: { productGroup } })}>
+            <ArrowLeftRight size={16} /> Compare Versions
+          </button>
+        )}
+        {productGroup && (
+          <button
+            className="btn primary"
+            onClick={() => {
+              setScanResult(undefined);
+              nav('/app/scan', {
+                state: {
+                  productGroup,
+                  lockedProductName: result.product.name,
+                  previousVersion: { label: versionLabel, score: result.score, issues: result.violations.length }
+                }
+              });
+            }}
+          >
+            <Upload size={16} /> Submit Revised Artwork
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ManufacturerDashboard({ onNewScan }: { onNewScan: () => void }) {
-  const [stats, setStats] = useState({ totalScans: 0, compliant: 0, nonCompliant: 0, review: 0, pendingComplaints: 0, confirmedViolations: 0 });
-  const [recentScans, setRecentScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
+  const nav = useNavigate();
+  const [groups, setGroups] = useState<Awaited<ReturnType<typeof listProductGroups>>>([]);
+  const [checks, setChecks] = useState<Awaited<ReturnType<typeof listManufacturerChecks>>>([]);
   const [loading, setLoading] = useState(true);
 
   React.useEffect(() => {
-    Promise.all([getDashboardStats(), listRealScans()])
-      .then(([s, scans]) => { setStats(s); setRecentScans(scans); })
+    Promise.all([listProductGroups(), listManufacturerChecks()])
+      .then(([g, c]) => { setGroups(g); setChecks(c); })
       .catch(e => alert('Failed to load dashboard: ' + (e as Error).message))
       .finally(() => setLoading(false));
   }, []);
+
+  const reviewRequired = groups.filter(g => g.status === 'REVIEW REQUIRED').length;
+  const potentialIssues = groups.reduce((sum, g) => sum + g.issues, 0);
+  const latest = checks[0];
 
   return (
     <>
       <div className="page-title">
         <div>
-          <span className="eyebrow">PREVENTIVE PACKAGING DESK</span>
-          <h1>Pre-Market Packaging Compliance Check</h1>
-          <p>Verify your packaging artwork and mandatory declarations before releasing batches into the market.</p>
+          <span className="eyebrow">PREVENTIVE COMPLIANCE</span>
+          <h1>Manufacturer Compliance Centre</h1>
+          <p>Upload packaging artwork, identify potential issues, and save a review before release.</p>
         </div>
-        <button className="btn primary" onClick={onNewScan}><Camera size={16} /> Check Packaging Design</button>
+        <button className="btn primary" onClick={onNewScan}><Camera size={16} /> Start Packaging Compliance Check</button>
       </div>
 
       <div className="stats">
-        <article><b className="num">{stats.totalScans}</b><span>Packages Checked</span></article>
-        <article><b className="num" style={{ color: 'var(--status-good)' }}>{stats.compliant}</b><span>Passed / Market Ready</span></article>
-        <article><b className="num" style={{ color: 'var(--status-warn)' }}>{stats.nonCompliant}</b><span>Corrections Required</span></article>
-        <article><b className="num" style={{ color: 'var(--brand-primary)' }}>100%</b><span>Audit Trail Saved</span></article>
+        <article><b className="num">{groups.length}</b><span>Products / Artworks</span></article>
+        <article><b className="num">{checks.length}</b><span>Compliance Checks</span></article>
+        <article><b className="num" style={{ color: 'var(--status-warn)' }}>{reviewRequired}</b><span>Review Required</span></article>
+        <article><b className="num" style={{ color: 'var(--status-bad)' }}>{potentialIssues}</b><span>Potential Issues</span></article>
+        <article><b className="num" style={{ color: 'var(--status-warn)' }}>{latest ? `${latest.score}/100` : '—'}</b><span>Latest Compliance Score</span></article>
       </div>
 
-      <div className="panel" style={{ margin: '20px 32px' }}>
-        <h2>Recent Artwork Checks</h2>
+      <section className="panel">
+        <h2>Recent Compliance Checks</h2>
         {loading ? (
-          <p>Loading...</p>
-        ) : recentScans.length === 0 ? (
-          <p>No packaging checks yet.</p>
+          <p style={{ padding: '20px' }}>Loading...</p>
+        ) : checks.length === 0 ? (
+          <p style={{ padding: '20px' }}>No compliance checks yet.</p>
         ) : (
           <table>
-            <thead>
-              <tr><th>Packaging Item</th><th>Score</th><th>Status</th></tr>
-            </thead>
+            <thead><tr><th>Product</th><th>Version</th><th>Date</th><th>Score</th><th>Status</th><th>Findings</th></tr></thead>
             <tbody>
-              {recentScans.map(r => (
-                <tr key={r.scanId}>
-                  <td>📦 {r.productName}</td>
-                  <td className="num">{r.score}/100</td>
-                  <td><span className={'badge ' + cls(r.status as Status)}>{r.status.replace(/_/g, ' ')}</span></td>
+              {checks.slice(0, 8).map(c => (
+                <tr key={c.scanId}>
+                  <td><strong>{c.productName}</strong></td>
+                  <td className="num">{c.versionLabel}</td>
+                  <td className="num">{c.date}</td>
+                  <td className="num">{c.score}/100</td>
+                  <td><span className={'badge ' + cls(c.status as Status)}>{c.status.replace(/_/g, ' ')}</span></td>
+                  <td className="num">{c.issues}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-      </div>
+      </section>
     </>
   );
 }
-
 function SellerBulkScan() {
   const [pending, setPending] = useState<{ file: File; previewUrl: string; productName: string }[]>([]);
   const [category, setCategory] = useState('Packaged food');
@@ -2383,7 +2534,11 @@ function ManufacturerRoutes({ scanResult, setScanResult, nav }: {
   nav: ReturnType<typeof useNavigate>;
 }) {
   const location = useLocation();
-  const navState = location.state as { productGroup?: string; lockedProductName?: string } | null;
+  const navState = location.state as {
+    productGroup?: string;
+    lockedProductName?: string;
+    previousVersion?: { label: string; score: number; issues: number };
+  } | null;
   const [versionLabel, setVersionLabel] = useState<string>();
 
   React.useEffect(() => {
@@ -2394,43 +2549,35 @@ function ManufacturerRoutes({ scanResult, setScanResult, nav }: {
   return (
     <Routes>
       <Route index element={<ManufacturerDashboard onNewScan={() => { setScanResult(undefined); nav('/app/scan'); }} />} />
-      <Route path="products" element={<ProductsArtwork />} />
-      <Route path="recommendations" element={<Recommendations />} />
+      <Route path="products" element={<ProductsArtwork setScanResult={setScanResult} />} />
+      <Route path="recommendations" element={<Recommendations setScanResult={setScanResult} />} />
       <Route path="version-comparison" element={<VersionComparison />} />
       <Route path="scan" element={scanResult ? (
-        <div className="result">
-          <div className="result-head">
-            <div className="product-art">{scanResult.product.image}</div>
-            <div>
-              <span className="eyebrow">PRE-MARKET PACKAGING AUDIT</span>
-              <h1>{scanResult.product.name}</h1>
-              <p>{scanResult.product.category} · Artwork Design Check</p>
-            </div>
-            <Seal score={scanResult.score} statusLabel={scanResult.status} tone={cls(scanResult.status) as 'good' | 'warn' | 'bad'} />
-          </div>
-          <section className="panel" style={{ margin: '18px 0' }}>
-            <h2>Packaging Corrections Checklist</h2>
-            {scanResult.violations.length > 0 ? scanResult.violations.map((v, i) => (
-              <div key={i} style={{ padding: '12px', background: 'var(--status-bad-bg)', borderRadius: 'var(--radius-sm)', marginBottom: '10px' }}>
-                <strong style={{ color: 'var(--status-bad)' }}>{v.requirement} ({v.section})</strong>
-                <p style={{ margin: '4px 0', fontSize: '13px' }}><b>Correction Needed:</b> {v.recommendation}</p>
-              </div>
-            )) : <p>Packaging artwork is 100% compliant with Legal Metrology (PCR) Rules, 2011.</p>}
-          </section>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button className="btn primary" onClick={() => setScanResult(undefined)}>Test Another Packaging Version</button>
-            <button className="btn outline" onClick={() => nav('/app/products')}>Back to Products &amp; Artwork</button>
-          </div>
-        </div>
+        <ManufacturerResultView result={scanResult} previousVersion={navState?.previousVersion} nav={nav} setScanResult={setScanResult} />
       ) : (
         <>
           <div className="page-title">
             <div>
               <span className="eyebrow">PREVENTIVE VERIFICATION</span>
-              <h1>{navState?.productGroup ? `Upload New Version — ${navState.lockedProductName}` : 'Upload Package Artwork Draft'}</h1>
+              <h1>
+                {navState?.previousVersion
+                  ? `Submit Revised Packaging — ${navState.lockedProductName}`
+                  : navState?.productGroup
+                    ? `Upload New Version — ${navState.lockedProductName}`
+                    : 'Upload Package Artwork Draft'}
+              </h1>
               <p>Run real AI analysis to ensure zero statutory violations before sending to print.</p>
             </div>
           </div>
+          {navState?.previousVersion && (
+            <div className="panel" style={{ margin: '0 32px 20px', padding: '16px', background: 'var(--bg-subtle)', border: '1px solid var(--border-light)' }}>
+              <span className="eyebrow">PREVIOUS VERSION</span>
+              <p style={{ margin: '6px 0 0' }}>
+                <b>{navState.previousVersion.label}</b> · Score: <b>{navState.previousVersion.score}/100</b> · Issues: <b>{navState.previousVersion.issues}</b>
+                {versionLabel && <> — this upload will become <b>{versionLabel}</b></>}
+              </p>
+            </div>
+          )}
           <Scanner
             done={setScanResult}
             role="manufacturer"
@@ -2445,7 +2592,6 @@ function ManufacturerRoutes({ scanResult, setScanResult, nav }: {
     </Routes>
   );
 }
-
 function AppShell() {
   const nav = useNavigate();
   const user = JSON.parse(localStorage.getItem('lg-user') || 'null') as { role: Role; name: string; userId?: string; organizationId?: string | null } | null;
@@ -2751,7 +2897,7 @@ function AppShell() {
           )}
 
           <Route path="report" element={<ReportView />} />
-          <Route path="*" element={<Navigate to="/app" />} />
+          {user.role !== 'manufacturer' && <Route path="*" element={<Navigate to="/app" />} />}
         </Routes>
       </div>
     </div>
