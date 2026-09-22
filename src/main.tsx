@@ -2,15 +2,15 @@ import React, { useState } from 'react';
 
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { 
-  ShieldCheck, CheckCircle2, AlertTriangle, XCircle, Upload, FileText, LogOut, Search, 
-  Camera, LayoutDashboard, History as HistoryIcon, ClipboardCheck, Flag, RefreshCw, 
-  Printer, MapPin, ExternalLink, ArrowRight, Sparkles, BookOpen, Check, 
+import {
+  ShieldCheck, CheckCircle2, AlertTriangle, XCircle, Upload, FileText, LogOut, Search,
+  Camera, LayoutDashboard, History as HistoryIcon, ClipboardCheck, Flag, RefreshCw,
+  Printer, MapPin, ExternalLink, ArrowRight, Sparkles, BookOpen, Check,
   MessageSquare, ArrowLeftRight, ShieldAlert, PhoneCall, AlertCircle
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from './lib/supabase';
-import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan } from './lib/api';
+import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, getAllEvidenceImages, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan, listProductGroups, listVersionsForGroup, compareVersions, listRecommendations, setManufacturerAction, nextVersionLabel } from './lib/api';
 
 type DbProfile = {
   id: string;
@@ -38,30 +38,30 @@ type RuleViolation = {
   officerDecision?: 'VERIFIED' | 'REJECTED';
 };
 
-type Product = { 
-  id: string; 
-  name: string; 
-  manufacturer: string; 
-  category: string; 
-  image: string; 
-  fields: Record<string, string>; 
-  status: Status; 
-  location?: string; 
+type Product = {
+  id: string;
+  name: string;
+  manufacturer: string;
+  category: string;
+  image: string;
+  fields: Record<string, string>;
+  status: Status;
+  location?: string;
   confidence?: Record<string, number>;
 };
 
-type Result = { 
-  id: string; 
+type Result = {
+  id: string;
   dbScanId?: string;
-  product: Product; 
-  score: number; 
-  status: Status; 
-  violations: RuleViolation[]; 
-  date: string; 
-  review?: { 
-    inspector: string; 
-    remarks?: string; 
-    confirmedAt: string; 
+  product: Product;
+  score: number;
+  status: Status;
+  violations: RuleViolation[];
+  date: string;
+  review?: {
+    inspector: string;
+    remarks?: string;
+    confirmedAt: string;
   };
 };
 
@@ -91,81 +91,81 @@ const URL_AMEND_2023 = 'https://www.legitquest.com/act/legal-metrology-packaged-
 const URL_NCH = 'https://consumerhelpline.gov.in/';
 
 const products: Product[] = [
-  { 
-    id: 'rice', 
-    name: 'Premium Basmati Rice', 
-    manufacturer: 'ABC Foods Pvt. Ltd.', 
-    category: 'Food grain', 
-    image: '🍚', 
+  {
+    id: 'rice',
+    name: 'Premium Basmati Rice',
+    manufacturer: 'ABC Foods Pvt. Ltd.',
+    category: 'Food grain',
+    image: '🍚',
     status: 'COMPLIANT',
-    fields: { 
-      'Generic Name': 'Premium Basmati Rice', 
-      'Net Quantity': '5 kg', 
-      'MRP': '₹650 (incl. of all taxes)', 
-      'Manufacturer': 'ABC Foods Pvt. Ltd., Pune 411001', 
-      'Country of Origin': 'India', 
-      'Consumer Care': '1800-123-4567, care@abcfoods.com', 
-      'Packing Date': '07/2026' 
+    fields: {
+      'Generic Name': 'Premium Basmati Rice',
+      'Net Quantity': '5 kg',
+      'MRP': '₹650 (incl. of all taxes)',
+      'Manufacturer': 'ABC Foods Pvt. Ltd., Pune 411001',
+      'Country of Origin': 'India',
+      'Consumer Care': '1800-123-4567, care@abcfoods.com',
+      'Packing Date': '07/2026'
     },
     location: 'Retail Store, Pune, Maharashtra',
-    confidence: { 'Generic Name': 99, 'Net Quantity': 98, 'MRP': 97, 'Manufacturer': 96, 'Country of Origin': 95, 'Consumer Care': 93, 'Packing Date': 97 } 
+    confidence: { 'Generic Name': 99, 'Net Quantity': 98, 'MRP': 97, 'Manufacturer': 96, 'Country of Origin': 95, 'Consumer Care': 93, 'Packing Date': 97 }
   },
-  { 
-    id: 'oil', 
-    name: 'PureDrop Cooking Oil', 
-    manufacturer: 'Narmada Essentials', 
-    category: 'Edible oil', 
-    image: '🫗', 
+  {
+    id: 'oil',
+    name: 'PureDrop Cooking Oil',
+    manufacturer: 'Narmada Essentials',
+    category: 'Edible oil',
+    image: '🫗',
     status: 'NON_COMPLIANT',
-    fields: { 
-      'Generic Name': 'PureDrop Cooking Oil', 
-      'Net Quantity': '1 Litre (900 mL)', 
-      'MRP': '₹340 (incl. of taxes)', 
-      'Manufacturer': 'Narmada Essentials, Indore, MP', 
-      'Country of Origin': 'India', 
-      'Consumer Care': '1800-780-1212', 
-      'Packing Date': '07/2026' 
+    fields: {
+      'Generic Name': 'PureDrop Cooking Oil',
+      'Net Quantity': '1 Litre (900 mL)',
+      'MRP': '₹340 (incl. of taxes)',
+      'Manufacturer': 'Narmada Essentials, Indore, MP',
+      'Country of Origin': 'India',
+      'Consumer Care': '1800-780-1212',
+      'Packing Date': '07/2026'
     },
     location: 'Grocery World, Indore',
-    confidence: { 'Generic Name': 96, 'Net Quantity': 62, 'MRP': 95, 'Manufacturer': 93, 'Country of Origin': 94, 'Consumer Care': 90, 'Packing Date': 93 } 
+    confidence: { 'Generic Name': 96, 'Net Quantity': 62, 'MRP': 95, 'Manufacturer': 93, 'Country of Origin': 94, 'Consumer Care': 90, 'Packing Date': 93 }
   },
-  { 
-    id: 'biscuits', 
-    name: 'Golden Crunch Biscuits', 
-    manufacturer: 'Sunrise Foods India', 
-    category: 'Packaged food', 
-    image: '🍪', 
+  {
+    id: 'biscuits',
+    name: 'Golden Crunch Biscuits',
+    manufacturer: 'Sunrise Foods India',
+    category: 'Packaged food',
+    image: '🍪',
     status: 'NON_COMPLIANT',
-    fields: { 
-      'Generic Name': 'Golden Crunch Biscuits', 
-      'Net Quantity': '300 g', 
-      'MRP': 'Not detected', 
-      'Manufacturer': 'Sunrise Foods India, Noida, UP', 
-      'Country of Origin': 'India', 
-      'Consumer Care': '1800-222-9090', 
-      'Packing Date': '06/2026' 
+    fields: {
+      'Generic Name': 'Golden Crunch Biscuits',
+      'Net Quantity': '300 g',
+      'MRP': 'Not detected',
+      'Manufacturer': 'Sunrise Foods India, Noida, UP',
+      'Country of Origin': 'India',
+      'Consumer Care': '1800-222-9090',
+      'Packing Date': '06/2026'
     },
     location: 'Super Mart, Sector 18, Noida',
-    confidence: { 'Generic Name': 97, 'Net Quantity': 95, 'Manufacturer': 92, 'Consumer Care': 94, 'Packing Date': 91 } 
+    confidence: { 'Generic Name': 97, 'Net Quantity': 95, 'Manufacturer': 92, 'Consumer Care': 94, 'Packing Date': 91 }
   },
-  { 
-    id: 'spices', 
-    name: 'Heritage Turmeric Powder', 
-    manufacturer: 'Not detected', 
-    category: 'Spices', 
-    image: '🫙', 
+  {
+    id: 'spices',
+    name: 'Heritage Turmeric Powder',
+    manufacturer: 'Not detected',
+    category: 'Spices',
+    image: '🫙',
     status: 'NON_COMPLIANT',
-    fields: { 
-      'Generic Name': 'Heritage Turmeric Powder', 
-      'Net Quantity': '200 g', 
-      'MRP': '₹95', 
-      'Manufacturer': 'Not detected', 
-      'Country of Origin': 'India', 
-      'Consumer Care': 'Not detected', 
-      'Packing Date': '08/2026' 
+    fields: {
+      'Generic Name': 'Heritage Turmeric Powder',
+      'Net Quantity': '200 g',
+      'MRP': '₹95',
+      'Manufacturer': 'Not detected',
+      'Country of Origin': 'India',
+      'Consumer Care': 'Not detected',
+      'Packing Date': '08/2026'
     },
     location: 'Local Kirana Store, Chandni Chowk, Delhi',
-    confidence: { 'Generic Name': 94, 'Net Quantity': 92, 'MRP': 90, 'Country of Origin': 88, 'Packing Date': 85 } 
+    confidence: { 'Generic Name': 94, 'Net Quantity': 92, 'MRP': 90, 'Country of Origin': 88, 'Packing Date': 85 }
   },
 ];
 
@@ -259,11 +259,11 @@ const initialComplaints: Complaint[] = [
   }
 ];
 
-const labels: Record<Role, string> = { 
-  officer: 'Legal Metrology Officer', 
-  manufacturer: 'Manufacturer / Packer', 
-  seller: 'E-commerce / Seller', 
-  consumer: 'Consumer' 
+const labels: Record<Role, string> = {
+  officer: 'Legal Metrology Officer',
+  manufacturer: 'Manufacturer / Packer',
+  seller: 'E-commerce / Seller',
+  consumer: 'Consumer'
 };
 
 const creds: Record<Role, { email: string; password: string; name: string }> = {
@@ -274,9 +274,9 @@ const creds: Record<Role, { email: string; password: string; name: string }> = {
 };
 
 const ruleSummaries = [
-  { 
+  {
     id: 'act-2009',
-    title: 'Legal Metrology Act, 2009', 
+    title: 'Legal Metrology Act, 2009',
     subtitle: 'Primary Central Act',
     url: URL_ACT_2009,
     source: 'Ministry of Consumer Affairs',
@@ -288,9 +288,9 @@ const ruleSummaries = [
       'Penal Consequences: Prescribes fines up to ₹25,000 for the first offence, ₹50,000 for the second, and imprisonment for subsequent offences under Section 36.'
     ]
   },
-  { 
+  {
     id: 'pcr-2011',
-    title: 'Packaged Commodities Rules (PCR), 2011', 
+    title: 'Packaged Commodities Rules (PCR), 2011',
     subtitle: 'Mandatory PDP Declarations',
     url: URL_PCR_2011,
     source: 'Indian Kanoon Statutory Library',
@@ -305,9 +305,9 @@ const ruleSummaries = [
       '7. Country of Origin: Clear declaration of the country where the product was manufactured.'
     ]
   },
-  { 
+  {
     id: 'amend-2023',
-    title: 'Packaged Commodities (Amendment) Rules, 2023', 
+    title: 'Packaged Commodities (Amendment) Rules, 2023',
     subtitle: 'Unit Pricing & Digital Marketplace Rules',
     url: URL_AMEND_2023,
     source: 'LegitQuest Legal Portal',
@@ -392,11 +392,11 @@ function NchCard() {
       <p style={{ margin: '0 0 16px', fontSize: '14px', fontWeight: 700, color: '#0f172a' }}>
         Helpline: <span style={{ color: '#0b6675' }}>1915</span>
       </p>
-      <a 
-        className="btn outline" 
-        href={URL_NCH} 
-        target="_blank" 
-        rel="noopener noreferrer" 
+      <a
+        className="btn outline"
+        href={URL_NCH}
+        target="_blank"
+        rel="noopener noreferrer"
         style={{ background: '#ffffff', color: '#0f172a', fontWeight: 700, borderColor: '#cbd5e1' }}
       >
         Visit National Consumer Helpline <ExternalLink size={13} />
@@ -406,13 +406,13 @@ function NchCard() {
 }
 
 const SCAN_STEPS = [
-  'Reading package display panel...', 
-  'Extracting mandatory declarations (OCR)...', 
-  'Checking Maximum Retail Price (Rule 6(1)(e))...', 
-  'Validating Net Quantity & SI Units (Rule 6(1)(b))...', 
-  'Verifying Manufacturer / Packer details (Rule 6(1)(a))...', 
-  'Checking Consumer Care helpline credentials (Rule 6(2))...', 
-  'Applying Legal Metrology (PCR) 2011 compliance rules...', 
+  'Reading package display panel...',
+  'Extracting mandatory declarations (OCR)...',
+  'Checking Maximum Retail Price (Rule 6(1)(e))...',
+  'Validating Net Quantity & SI Units (Rule 6(1)(b))...',
+  'Verifying Manufacturer / Packer details (Rule 6(1)(a))...',
+  'Checking Consumer Care helpline credentials (Rule 6(2))...',
+  'Applying Legal Metrology (PCR) 2011 compliance rules...',
   'Generating compliance assessment...'
 ];
 
@@ -422,9 +422,9 @@ const IMAGE_SLOTS: { type: 'FRONT' | 'BACK' | 'STRIP'; label: string; hint: stri
   { type: 'STRIP', label: 'Tear-strip / seal', hint: 'Often has MRP, batch info', required: false },
 ];
 
-function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
+function Scanner({ done, role, productGroup, versionLabel, lockedProductName }: { done: (r: Result) => void; role: Role; productGroup?: string; versionLabel?: string; lockedProductName?: string }) {
   const [slots, setSlots] = useState<Record<string, { file: File; preview: string } | undefined>>({});
-  const [productName, setProductName] = useState('');
+  const [productName, setProductName] = useState(lockedProductName ?? '');
   const [isImported, setIsImported] = useState(false);
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
@@ -450,7 +450,9 @@ function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
         productName: productName.trim(),
         category: 'Packaged food',
         scanType: role.toUpperCase() as 'OFFICER' | 'MANUFACTURER' | 'SELLER' | 'CONSUMER',
-        isImported
+        isImported,
+        productGroup,
+        versionLabel
       });
       const backendResult = await getScanResult(scanId);
       const uiResult = mapToUiResult(backendResult);
@@ -480,6 +482,11 @@ function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
           <input type="checkbox" checked={isImported} onChange={e => setIsImported(e.target.checked)} disabled={loading} style={{ width: 'auto' }} />
           This product is imported (Country of Origin declaration will be checked)
         </label>
+        {versionLabel && (
+          <div style={{ marginTop: '8px' }}>
+            <span className="badge good">Uploading as {versionLabel}</span>
+          </div>
+        )}
       </div>
 
       <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '4px 0 12px' }}>
@@ -530,7 +537,7 @@ function Scanner({ done, role }: { done: (r: Result) => void; role: Role }) {
             Remove All Images
           </button>
           <button className="btn primary" onClick={analyze} disabled={loading}>
-            {loading ? <RefreshCw className="spin" size={16} /> : <Camera size={16} />} 
+            {loading ? <RefreshCw className="spin" size={16} /> : <Camera size={16} />}
             {loading ? 'Analyzing...' : role === 'consumer' ? 'Check Product' : 'Run Compliance Scan'}
           </button>
         </div>
@@ -763,22 +770,22 @@ function OfficerInspectionResult({ result, onUpdateStatus }: { result: Result; o
         )}
 
         <div className="result-actions" style={{ justifyContent: 'flex-start', gap: '12px', marginTop: '14px' }}>
-          <button 
-            className="btn primary" 
-            style={{ background: 'var(--status-bad)' }} 
+          <button
+            className="btn primary"
+            style={{ background: 'var(--status-bad)' }}
             onClick={() => onUpdateStatus('INSPECTOR_CONFIRMED_NON_COMPLIANT')}
           >
             <ShieldAlert size={16} /> [Confirm Non-Compliant]
           </button>
-          <button 
-            className="btn outline" 
-            style={{ borderColor: 'var(--status-warn)', color: 'var(--status-warn)' }} 
+          <button
+            className="btn outline"
+            style={{ borderColor: 'var(--status-warn)', color: 'var(--status-warn)' }}
             onClick={() => onUpdateStatus('UNDER_REINSPECTION')}
           >
             [Send for Re-inspection]
           </button>
-          <button 
-            className="btn outline" 
+          <button
+            className="btn outline"
             onClick={() => nav('/app/report', { state: result })}
           >
             <FileText size={16} /> Generate Official Inspection Report
@@ -793,7 +800,7 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
   const [expanded, setExpanded] = useState(false);
   const [remarks, setRemarks] = useState('');
   const [busy, setBusy] = useState(false);
-  const [evidenceUrl, setEvidenceUrl] = useState<string | null>();
+  const [evidenceImages, setEvidenceImages] = useState<{ url: string; type: string }[] | undefined>();
   const [loadingReport, setLoadingReport] = useState(false);
   const nav = useNavigate();
 
@@ -802,9 +809,11 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
 
   const statusBadgeClass = c.status === 'SUBMITTED' ? 'bad' : c.status === 'UNDER_INVESTIGATION' ? 'warn' : 'good';
 
+  const IMAGE_TYPE_LABELS: Record<string, string> = { FRONT: 'Front panel', BACK: 'Back panel', STRIP: 'Tear-strip / seal', LABEL: 'Label' };
+
   React.useEffect(() => {
-    if (!expanded || !c.productId || evidenceUrl !== undefined) return;
-    getEvidenceImageUrl(c.productId).then(setEvidenceUrl).catch(() => setEvidenceUrl(null));
+    if (!expanded || !c.productId || evidenceImages !== undefined) return;
+    getAllEvidenceImages(c.productId).then(setEvidenceImages).catch(() => setEvidenceImages([]));
   }, [expanded, c.productId]);
 
   const viewFullReport = async () => {
@@ -853,27 +862,34 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
           <td colSpan={6} style={{ padding: 0 }}>
             <div style={{ padding: '20px', background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-light)' }}>
               {c.scanId ? (
-                <div style={{ display: 'flex', gap: '16px', marginBottom: '16px', alignItems: 'flex-start' }}>
-                  <div style={{ width: '160px', height: '160px', flexShrink: 0, background: '#fff', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-                    {evidenceUrl === undefined ? (
-                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading...</span>
-                    ) : evidenceUrl === null ? (
-                      <span style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px', textAlign: 'center' }}>No photo found</span>
+                <div style={{ marginBottom: '16px' }}>
+                  <strong style={{ display: 'block', fontSize: '13px', marginBottom: '10px' }}>
+                    Evidence: original photo(s) scanned by the consumer
+                  </strong>
+                  <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    {evidenceImages === undefined ? (
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading images...</span>
+                    ) : evidenceImages.length === 0 ? (
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No photos found</span>
                     ) : (
-                      <img src={evidenceUrl} alt="Evidence — original scanned label" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      evidenceImages.map((img, i) => (
+                        <div key={i} style={{ textAlign: 'center' }}>
+                          <div style={{ width: '140px', height: '140px', background: '#fff', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+                            <img src={img.url} alt={IMAGE_TYPE_LABELS[img.type] ?? img.type} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          </div>
+                          <span style={{ display: 'block', fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                            {IMAGE_TYPE_LABELS[img.type] ?? img.type}
+                          </span>
+                        </div>
+                      ))
                     )}
                   </div>
-                  <div>
-                    <strong style={{ display: 'block', fontSize: '13px', marginBottom: '6px' }}>
-                      Evidence: original photo scanned by the consumer
-                    </strong>
-                    <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'var(--text-muted)' }}>
-                      This is the exact packaging photo the consumer's app analysis was based on.
-                    </p>
-                    <button className="btn outline" onClick={viewFullReport} disabled={loadingReport} style={{ fontSize: '12px', padding: '6px 12px' }}>
-                      {loadingReport ? 'Loading...' : 'View Full AI Scan Report'}
-                    </button>
-                  </div>
+                  <p style={{ margin: '10px 0', fontSize: '12px', color: 'var(--text-muted)' }}>
+                    These are the exact packaging photo(s) the consumer's app analysis was based on.
+                  </p>
+                  <button className="btn outline" onClick={viewFullReport} disabled={loadingReport} style={{ fontSize: '12px', padding: '6px 12px' }}>
+                    {loadingReport ? 'Loading...' : 'View Full AI Scan Report'}
+                  </button>
                 </div>
               ) : (
                 <p style={{ margin: '0 0 12px', fontSize: '12px', color: 'var(--text-muted)' }}>
@@ -1145,6 +1161,271 @@ function LabelGenerator() {
     </>
   );
 }
+
+function productStatusBadgeCls(status: string) {
+  if (status === 'COMPLIANT') return 'good';
+  if (status === 'REVIEW REQUIRED') return 'warn';
+  if (status === 'ISSUES FOUND') return 'bad';
+  return '';
+}
+
+function ProductsArtwork() {
+  const nav = useNavigate();
+  const [groups, setGroups] = useState<Awaited<ReturnType<typeof listProductGroups>>>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = () => {
+    setLoading(true);
+    listProductGroups()
+      .then(setGroups)
+      .catch(e => alert('Failed to load products: ' + (e as Error).message))
+      .finally(() => setLoading(false));
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">ARTWORK MANAGEMENT</span>
+          <h1>Products &amp; Artwork</h1>
+          <p>Every product line you've scanned, grouped with all its artwork versions.</p>
+        </div>
+        <button className="btn primary" onClick={() => nav('/app/scan')}><Camera size={16} /> Check New Artwork</button>
+      </div>
+
+      <section className="panel">
+        {loading ? (
+          <p style={{ padding: '20px' }}>Loading...</p>
+        ) : groups.length === 0 ? (
+          <p style={{ padding: '20px' }}>No products yet. Run "Package Check" to check your first artwork.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Product</th><th>Category</th><th>Current Version</th><th>Versions</th>
+                <th>Score</th><th>Status</th><th>Issues</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map(g => (
+                <tr key={g.productGroup}>
+                  <td><strong>{g.name}</strong></td>
+                  <td>{g.category}</td>
+                  <td className="num">{g.currentVersionLabel}</td>
+                  <td className="num">{g.versionCount}</td>
+                  <td className="num">{g.score ?? '—'}</td>
+                  <td><span className={'badge ' + productStatusBadgeCls(g.status)}>{g.status}</span></td>
+                  <td className="num">{g.issues}</td>
+                  <td>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button className="linkbtn" onClick={() => nav('/app/scan', { state: { productGroup: g.productGroup, lockedProductName: g.name } })}>Upload New Version</button>
+                      <button className="linkbtn" onClick={() => nav('/app/version-comparison', { state: { productGroup: g.productGroup } })}>Compare</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </>
+  );
+}
+
+function Recommendations() {
+  const nav = useNavigate();
+  const location = useLocation();
+  const filterGroup = (location.state as { productGroup?: string } | null)?.productGroup;
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof listRecommendations>>>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string>();
+
+  const load = () => {
+    setLoading(true);
+    listRecommendations(filterGroup)
+      .then(setRows)
+      .catch(e => alert('Failed to load recommendations: ' + (e as Error).message))
+      .finally(() => setLoading(false));
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  const act = async (violationId: string, action: 'REVIEWED' | 'CORRECTED') => {
+    setBusyId(violationId);
+    try { await setManufacturerAction(violationId, action); load(); }
+    catch (e) { alert('Failed: ' + (e as Error).message); }
+    finally { setBusyId(undefined); }
+  };
+
+  const severityCls = (s: string) => s === 'HIGH' ? 'bad' : s === 'MEDIUM' ? 'warn' : 'good';
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">CORRECTION RECOMMENDATIONS</span>
+          <h1>Turn findings into artwork updates</h1>
+          <p>Review rule-engine findings by saved product and artwork version.</p>
+        </div>
+      </div>
+
+      <section className="panel">
+        {loading ? (
+          <p style={{ padding: '20px' }}>Loading...</p>
+        ) : rows.length === 0 ? (
+          <p style={{ padding: '20px' }}>No open recommendations — every checked artwork has passed all rules.</p>
+        ) : (
+          rows.map(row => (
+            <article key={row.violationId} className="panel" style={{ margin: '14px 0', padding: '18px', background: 'var(--bg-subtle)', borderLeft: `4px solid var(--status-${row.severity === 'HIGH' ? 'bad' : 'warn'})` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <span className="eyebrow">{row.productName} · {row.versionLabel}</span>
+                  <h3 style={{ margin: '6px 0' }}>{row.issue}</h3>
+                </div>
+                <span className={'badge ' + severityCls(row.severity)}>{row.severity}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', margin: '10px 0' }}>
+                <div style={{ background: '#fff', padding: '8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-light)' }}>
+                  <small style={{ color: 'var(--text-muted)' }}>Current value</small><br /><strong>{row.currentValue}</strong>
+                </div>
+                <div style={{ background: '#fff', padding: '8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-light)' }}>
+                  <small style={{ color: 'var(--text-muted)' }}>Required value</small><br /><strong>{row.requiredValue}</strong>
+                </div>
+              </div>
+              <p style={{ fontSize: '13px', margin: '6px 0' }}><b>Recommendation:</b> {row.recommendation}</p>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '10px' }}>
+                {row.manufacturerAction && <span className={'badge ' + (row.manufacturerAction === 'CORRECTED' ? 'good' : 'warn')}>{row.manufacturerAction}</span>}
+                <button className="btn outline" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => act(row.violationId, 'REVIEWED')} disabled={busyId === row.violationId}>Mark as Reviewed</button>
+                <button className="btn outline" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => act(row.violationId, 'CORRECTED')} disabled={busyId === row.violationId}>Mark as Corrected</button>
+                <button className="btn primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => nav('/app/scan', { state: { productGroup: row.productGroup, lockedProductName: row.productName } })}>
+                  <RefreshCw size={13} /> Re-check Artwork
+                </button>
+              </div>
+            </article>
+          ))
+        )}
+      </section>
+    </>
+  );
+}
+
+function VersionComparison() {
+  const location = useLocation();
+  const preselect = (location.state as { productGroup?: string } | null)?.productGroup;
+  const [groups, setGroups] = useState<Awaited<ReturnType<typeof listProductGroups>>>([]);
+  const [productGroup, setProductGroup] = useState(preselect ?? '');
+  const [versions, setVersions] = useState<Awaited<ReturnType<typeof listVersionsForGroup>>>([]);
+  const [verAId, setVerAId] = useState('');
+  const [verBId, setVerBId] = useState('');
+  const [compareData, setCompareData] = useState<Awaited<ReturnType<typeof compareVersions>>>();
+  const [loading, setLoading] = useState(false);
+
+  React.useEffect(() => { listProductGroups().then(setGroups); }, []);
+
+  React.useEffect(() => {
+    if (!productGroup) { setVersions([]); return; }
+    listVersionsForGroup(productGroup).then(vs => {
+      setVersions(vs);
+      setVerAId(vs[0]?.productId ?? '');
+      setVerBId(vs[1]?.productId ?? vs[0]?.productId ?? '');
+    });
+  }, [productGroup]);
+
+  const runCompare = async () => {
+    if (!verAId || !verBId) return;
+    setLoading(true);
+    try { setCompareData(await compareVersions(verAId, verBId)); }
+    finally { setLoading(false); }
+  };
+
+  React.useEffect(() => { if (verAId && verBId) runCompare(); }, [verAId, verBId]);
+
+  const a = compareData?.a;
+  const b = compareData?.b;
+
+  let resolved = 0, newIssues = 0, unchanged = 0;
+  const fieldRows: { label: string; aOk: boolean | null; bOk: boolean | null }[] = [];
+  if (a && b) {
+    const fieldsA = new Map((a.violations ?? []).map((v: any) => [v.field, v]));
+    const fieldsB = new Map((b.violations ?? []).map((v: any) => [v.field, v]));
+    const allFields = new Set([...fieldsA.keys(), ...fieldsB.keys()]);
+    for (const field of allFields) {
+      const aHasIssue = fieldsA.has(field);
+      const bHasIssue = fieldsB.has(field);
+      const label = (fieldsA.get(field) as any)?.rules?.rule_name ?? (fieldsB.get(field) as any)?.rules?.rule_name ?? field;
+      fieldRows.push({ label, aOk: !aHasIssue, bOk: !bHasIssue });
+      if (aHasIssue && !bHasIssue) resolved++;
+      else if (!aHasIssue && bHasIssue) newIssues++;
+      else unchanged++;
+    }
+  }
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">VERSION COMPARISON</span>
+          <h1>Measure revision progress</h1>
+          <p>Compare artwork versions of the same product line.</p>
+        </div>
+      </div>
+
+      <section className="panel">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px' }}>
+          <label style={{ margin: 0 }}>Product
+            <select value={productGroup} onChange={e => setProductGroup(e.target.value)}>
+              <option value="">— Select —</option>
+              {groups.map(g => <option key={g.productGroup} value={g.productGroup}>{g.name}</option>)}
+            </select>
+          </label>
+          <label style={{ margin: 0 }}>Version A
+            <select value={verAId} onChange={e => setVerAId(e.target.value)}>
+              {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel}</option>)}
+            </select>
+          </label>
+          <label style={{ margin: 0 }}>Version B
+            <select value={verBId} onChange={e => setVerBId(e.target.value)}>
+              {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel}</option>)}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      {loading ? (
+        <section className="panel"><p style={{ padding: '20px' }}>Loading comparison...</p></section>
+      ) : a && b ? (
+        <>
+          <div className="stats" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+            <article><b className="num">{a.scan.score ?? 0} → {b.scan.score ?? 0}</b><span>Compliance Score</span></article>
+            <article><b className="num" style={{ color: 'var(--status-good)' }}>{resolved}</b><span>Issues Resolved</span></article>
+            <article><b className="num" style={{ color: 'var(--status-bad)' }}>{newIssues}</b><span>New Issues</span></article>
+            <article><b className="num">{unchanged}</b><span>Unchanged</span></article>
+          </div>
+          <section className="panel">
+            <table>
+              <thead><tr><th>Requirement</th><th>{a.scan.products?.version_label ?? 'A'}</th><th>{b.scan.products?.version_label ?? 'B'}</th></tr></thead>
+              <tbody>
+                {fieldRows.map(row => (
+                  <tr key={row.label}>
+                    <td>{row.label}</td>
+                    <td><span className={'badge ' + (row.aOk ? 'good' : 'bad')}>{row.aOk ? 'PASS' : 'ISSUE'}</span></td>
+                    <td><span className={'badge ' + (row.bOk ? 'good' : 'bad')}>{row.bOk ? 'PASS' : 'ISSUE'}</span></td>
+                  </tr>
+                ))}
+                {fieldRows.length === 0 && <tr><td colSpan={3}>No violations on either version — both fully compliant.</td></tr>}
+              </tbody>
+            </table>
+          </section>
+        </>
+      ) : (
+        <section className="panel"><p style={{ padding: '20px' }}>Select a product with at least two checked versions to compare.</p></section>
+      )}
+    </>
+  );
+}
+
 
 function ManufacturerDashboard({ onNewScan }: { onNewScan: () => void }) {
   const [stats, setStats] = useState({ totalScans: 0, compliant: 0, nonCompliant: 0, review: 0, pendingComplaints: 0, confirmedViolations: 0 });
@@ -1623,7 +1904,7 @@ function ConsumerComplaintForm({ prefill, onSubmit, onCancel }: {
     setSubmitting(true);
     try {
       const issueType = selectedIssues.join(', ');
-      const saved = await submitComplaint({ 
+      const saved = await submitComplaint({
         productName, brand, category, issueType, description,
         amountCharged: isOvercharging ? parseFloat(amountCharged) : undefined,
         mrp: isOvercharging ? parseFloat(mrp) : undefined,
@@ -1810,7 +2091,7 @@ function ReportView() {
       <span className="eyebrow">STATUTORY LEGAL METROLOGY ASSESSMENT REPORT</span>
       <h1>{r.product.name}</h1>
       <p>Inspection Audit ID: <b className="num">{r.id}</b> · Date: <span className="num">{r.date}</span></p>
-      
+
       <div className={'report-score ' + cls(r.status)}>
         Audit Score: {r.score}/100 · Status: {r.status.replace(/_/g, ' ')}
       </div>
@@ -1858,14 +2139,14 @@ function Landing() {
           <Link className="btn primary" to="/login">Sign In</Link>
         </div>
       </nav>
-      
+
       <section className="landing-hero">
         <div className="hero-pill">
           <Sparkles size={15} /> Next-Gen Legal Metrology Verification (SIH 2026)
         </div>
         <h1>Smart Label Compliance for Every <em>Packaged Commodity</em></h1>
         <p>AI-assisted declaration extraction and real-time rule verification designed for Metrology Officers, FMCG manufacturers, and e-commerce sellers.</p>
-        
+
         <div className="hero-cta">
           <Link className="btn primary lg" to="/login">Start Compliance Check <ArrowRight size={18} /></Link>
           <Link className="btn outline lg" to="/rules">Browse Statutory Rules</Link>
@@ -1885,9 +2166,9 @@ function Landing() {
         </div>
         <div className="steps">
           {[['01', 'Upload / Scan', 'Capture image of product packaging or display panel.'],
-            ['02', 'Extract Declarations', 'Precision OCR extracts Net Qty, MRP, Packer, and Origin.'],
-            ['03', 'Apply Legal Rules', 'Instant evaluation against Legal Metrology (PCR) Rules, 2011.'],
-            ['04', 'Act with Confidence', 'Export official reports, flag violations, or request re-inspections.']].map(x => (
+          ['02', 'Extract Declarations', 'Precision OCR extracts Net Qty, MRP, Packer, and Origin.'],
+          ['03', 'Apply Legal Rules', 'Instant evaluation against Legal Metrology (PCR) Rules, 2011.'],
+          ['04', 'Act with Confidence', 'Export official reports, flag violations, or request re-inspections.']].map(x => (
             <article key={x[0]}>
               <b className="num">{x[0]}</b>
               <h3>{x[1]}</h3>
@@ -1958,17 +2239,17 @@ function Login() {
   const [email, setEmail] = useState(creds.officer.email);
   const [password, setPassword] = useState(creds.officer.password);
 
-  const choose = (r: Role) => { 
-    setRole(r); 
-    setEmail(creds[r].email); 
-    setPassword(creds[r].password); 
+  const choose = (r: Role) => {
+    setRole(r);
+    setEmail(creds[r].email);
+    setPassword(creds[r].password);
   };
 
   return (
     <main className="login">
       <Link className="brand" to="/"><ShieldCheck /> LabelGuard</Link>
-      <form onSubmit={async e => { 
-        e.preventDefault(); 
+      <form onSubmit={async e => {
+        e.preventDefault();
 
         const { data, error } = await supabase.auth.signInWithPassword({
           email: creds[role].email,
@@ -1989,13 +2270,13 @@ function Login() {
           return;
         }
 
-        localStorage.setItem('lg-user', JSON.stringify({ 
-          role, 
+        localStorage.setItem('lg-user', JSON.stringify({
+          role,
           name: profile.full_name,
           userId: profile.id,
           organizationId: profile.organization_id
-        })); 
-        nav('/app'); 
+        }));
+        nav('/app');
       }}>
         <span className="eyebrow">DEMO ACCESS (SIH PROTOTYPE)</span>
         <h1>Select Role to Log In</h1>
@@ -2042,13 +2323,13 @@ function NotificationBell() {
 
   const handleItemClick = async (id: string, isRead: boolean) => {
     if (!isRead) {
-      await markNotificationRead(id).catch(() => {});
+      await markNotificationRead(id).catch(() => { });
       load();
     }
   };
 
   const handleMarkAllRead = async () => {
-    await markAllNotificationsRead().catch(() => {});
+    await markAllNotificationsRead().catch(() => { });
     load();
   };
 
@@ -2096,6 +2377,75 @@ function NotificationBell() {
   );
 }
 
+function ManufacturerRoutes({ scanResult, setScanResult, nav }: {
+  scanResult: Result | undefined;
+  setScanResult: (r: Result | undefined) => void;
+  nav: ReturnType<typeof useNavigate>;
+}) {
+  const location = useLocation();
+  const navState = location.state as { productGroup?: string; lockedProductName?: string } | null;
+  const [versionLabel, setVersionLabel] = useState<string>();
+
+  React.useEffect(() => {
+    if (navState?.productGroup) nextVersionLabel(navState.productGroup).then(setVersionLabel);
+    else setVersionLabel(undefined);
+  }, [navState?.productGroup]);
+
+  return (
+    <Routes>
+      <Route index element={<ManufacturerDashboard onNewScan={() => { setScanResult(undefined); nav('/app/scan'); }} />} />
+      <Route path="products" element={<ProductsArtwork />} />
+      <Route path="recommendations" element={<Recommendations />} />
+      <Route path="version-comparison" element={<VersionComparison />} />
+      <Route path="scan" element={scanResult ? (
+        <div className="result">
+          <div className="result-head">
+            <div className="product-art">{scanResult.product.image}</div>
+            <div>
+              <span className="eyebrow">PRE-MARKET PACKAGING AUDIT</span>
+              <h1>{scanResult.product.name}</h1>
+              <p>{scanResult.product.category} · Artwork Design Check</p>
+            </div>
+            <Seal score={scanResult.score} statusLabel={scanResult.status} tone={cls(scanResult.status) as 'good' | 'warn' | 'bad'} />
+          </div>
+          <section className="panel" style={{ margin: '18px 0' }}>
+            <h2>Packaging Corrections Checklist</h2>
+            {scanResult.violations.length > 0 ? scanResult.violations.map((v, i) => (
+              <div key={i} style={{ padding: '12px', background: 'var(--status-bad-bg)', borderRadius: 'var(--radius-sm)', marginBottom: '10px' }}>
+                <strong style={{ color: 'var(--status-bad)' }}>{v.requirement} ({v.section})</strong>
+                <p style={{ margin: '4px 0', fontSize: '13px' }}><b>Correction Needed:</b> {v.recommendation}</p>
+              </div>
+            )) : <p>Packaging artwork is 100% compliant with Legal Metrology (PCR) Rules, 2011.</p>}
+          </section>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button className="btn primary" onClick={() => setScanResult(undefined)}>Test Another Packaging Version</button>
+            <button className="btn outline" onClick={() => nav('/app/products')}>Back to Products &amp; Artwork</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="page-title">
+            <div>
+              <span className="eyebrow">PREVENTIVE VERIFICATION</span>
+              <h1>{navState?.productGroup ? `Upload New Version — ${navState.lockedProductName}` : 'Upload Package Artwork Draft'}</h1>
+              <p>Run real AI analysis to ensure zero statutory violations before sending to print.</p>
+            </div>
+          </div>
+          <Scanner
+            done={setScanResult}
+            role="manufacturer"
+            productGroup={navState?.productGroup}
+            versionLabel={versionLabel}
+            lockedProductName={navState?.lockedProductName}
+          />
+        </>
+      )} />
+      <Route path="history" element={<HistoryPage role="manufacturer" />} />
+      <Route path="label-generator" element={<LabelGenerator />} />
+    </Routes>
+  );
+}
+
 function AppShell() {
   const nav = useNavigate();
   const user = JSON.parse(localStorage.getItem('lg-user') || 'null') as { role: Role; name: string; userId?: string; organizationId?: string | null } | null;
@@ -2124,7 +2474,10 @@ function AppShell() {
     ],
     manufacturer: [
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
+      { label: 'Products & Artwork', path: 'products', icon: <ClipboardCheck size={17} /> },
       { label: 'Package Check', path: 'scan', icon: <Camera size={17} /> },
+      { label: 'Correction Recommendations', path: 'recommendations', icon: <AlertTriangle size={17} /> },
+      { label: 'Version Comparison', path: 'version-comparison', icon: <ArrowLeftRight size={17} /> },
       { label: 'Label Generator', path: 'label-generator', icon: <Sparkles size={17} /> },
       { label: 'Analysis History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
@@ -2135,14 +2488,14 @@ function AppShell() {
       { label: 'Listing History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
     consumer: [
-      { 
-        label: 'Product Check', 
-        path: '', 
-        icon: <Camera size={17} />, 
-        action: () => { 
-          setScanResult(undefined); 
-          setIsConsumerScanning(false); 
-        } 
+      {
+        label: 'Product Check',
+        path: '',
+        icon: <Camera size={17} />,
+        action: () => {
+          setScanResult(undefined);
+          setIsConsumerScanning(false);
+        }
       },
       { label: 'My Grievances', path: 'complaint', icon: <MessageSquare size={17} /> },
     ],
@@ -2180,9 +2533,9 @@ function AppShell() {
         <span className="rolelabel">{labels[user.role]}</span>
 
         {currentNav.map(item => (
-          <NavLink 
-            key={item.label} 
-            to={'/app/' + item.path} 
+          <NavLink
+            key={item.label}
+            to={'/app/' + item.path}
             end={item.path === ''}
             onClick={() => {
               if (item.action) item.action();
@@ -2233,45 +2586,16 @@ function AppShell() {
           )}
 
           {user.role === 'manufacturer' && (
-            <>
-              <Route index element={<ManufacturerDashboard onNewScan={() => { setScanResult(undefined); nav('/app/scan'); }} />} />
-              <Route path="scan" element={scanResult ? (
-                <div className="result">
-                  <div className="result-head">
-                    <div className="product-art">{scanResult.product.image}</div>
-                    <div>
-                      <span className="eyebrow">PRE-MARKET PACKAGING AUDIT</span>
-                      <h1>{scanResult.product.name}</h1>
-                      <p>{scanResult.product.category} · Artwork Design Check</p>
-                    </div>
-                    <Seal score={scanResult.score} statusLabel={scanResult.status} tone={cls(scanResult.status) as 'good' | 'warn' | 'bad'} />
-                  </div>
-                  <section className="panel" style={{ margin: '18px 0' }}>
-                    <h2>Packaging Corrections Checklist</h2>
-                    {scanResult.violations.length > 0 ? scanResult.violations.map((v, i) => (
-                      <div key={i} style={{ padding: '12px', background: 'var(--status-bad-bg)', borderRadius: 'var(--radius-sm)', marginBottom: '10px' }}>
-                        <strong style={{ color: 'var(--status-bad)' }}>{v.requirement} ({v.section})</strong>
-                        <p style={{ margin: '4px 0', fontSize: '13px' }}><b>Correction Needed:</b> {v.recommendation}</p>
-                      </div>
-                    )) : <p>Packaging artwork is 100% compliant with Legal Metrology (PCR) Rules, 2011.</p>}
-                  </section>
-                  <button className="btn primary" onClick={() => setScanResult(undefined)}>Test Another Packaging Version</button>
-                </div>
-              ) : (
-                <>
-                  <div className="page-title">
-                    <div>
-                      <span className="eyebrow">PREVENTIVE VERIFICATION</span>
-                      <h1>Upload Package Artwork Draft</h1>
-                      <p>Run simulated OCR to ensure zero statutory violations before sending to print.</p>
-                    </div>
-                  </div>
-                  <Scanner done={setScanResult} role="manufacturer" />
-                </>
-              )} />
-              <Route path="history" element={<HistoryPage role="manufacturer" />} />
-              <Route path="label-generator" element={<LabelGenerator />} />
-            </>
+            <Route
+              path="*"
+              element={
+                <ManufacturerRoutes
+                  scanResult={scanResult}
+                  setScanResult={setScanResult}
+                  nav={nav}
+                />
+              }
+            />
           )}
 
           {user.role === 'seller' && (
@@ -2330,18 +2654,18 @@ function AppShell() {
                       <Seal score={scanResult.score} statusLabel={scanResult.status === 'COMPLIANT' ? 'COMPLIANT' : 'NON COMPLIANT'} tone={cls(scanResult.status) as 'good' | 'warn' | 'bad'} />
                     </div>
 
-                    <div 
-                      className="panel" 
-                      style={{ 
-                        margin: '18px 0', 
-                        background: scanResult.status === 'COMPLIANT' ? 'var(--status-good-bg)' : 'var(--status-bad-bg)', 
-                        border: '2px solid ' + (scanResult.status === 'COMPLIANT' ? 'var(--status-good)' : 'var(--status-bad)'), 
-                        borderRadius: 'var(--radius-md)', 
-                        padding: '20px' 
+                    <div
+                      className="panel"
+                      style={{
+                        margin: '18px 0',
+                        background: scanResult.status === 'COMPLIANT' ? 'var(--status-good-bg)' : 'var(--status-bad-bg)',
+                        border: '2px solid ' + (scanResult.status === 'COMPLIANT' ? 'var(--status-good)' : 'var(--status-bad)'),
+                        borderRadius: 'var(--radius-md)',
+                        padding: '20px'
                       }}
                     >
                       <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                        {scanResult.status === 'COMPLIANT' 
+                        {scanResult.status === 'COMPLIANT'
                           ? <CheckCircle2 size={24} color="var(--status-good)" style={{ flexShrink: 0, marginTop: '2px' }} />
                           : <AlertCircle size={24} color="var(--status-bad)" style={{ flexShrink: 0, marginTop: '2px' }} />
                         }
@@ -2377,9 +2701,9 @@ function AppShell() {
 
                     <div className="result-actions" style={{ justifyContent: 'flex-start', gap: '10px' }}>
                       {scanResult.status !== 'COMPLIANT' && (
-                        <button 
-                          className="btn primary" 
-                          onClick={() => nav('/app/complaint', { 
+                        <button
+                          className="btn primary"
+                          onClick={() => nav('/app/complaint', {
                             state: {
                               productName: scanResult.product.name,
                               brand: scanResult.product.manufacturer,
@@ -2387,7 +2711,7 @@ function AppShell() {
                               issueType: scanResult.violations.map(v => RULE_CODE_TO_ISSUE_LABEL[v.section] ?? v.requirement).join(', '),
                               description: `The following required details were missing or unclear on the packaging: ${scanResult.violations.map(v => v.requirement).join(', ')}.`,
                               scanId: scanResult.dbScanId
-                            } 
+                            }
                           })}
                         >
                           Report This Violation to Officer
@@ -2410,12 +2734,12 @@ function AppShell() {
                       </div>
                       <button className="btn outline" onClick={() => setIsConsumerScanning(false)}>Back to Portal</button>
                     </div>
-                    <Scanner 
+                    <Scanner
                       done={(res) => {
                         setScanResult(res);
                         setIsConsumerScanning(false);
-                      }} 
-                      role="consumer" 
+                      }}
+                      role="consumer"
                     />
                   </>
                 ) : (
