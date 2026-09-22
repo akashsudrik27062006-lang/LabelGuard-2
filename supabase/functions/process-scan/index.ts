@@ -63,28 +63,48 @@ Deno.serve(async (req) => {
     //          product) and extract ONE combined set of declarations,
     //          merging info that's split across different panels ----
     const geminiPrompt = buildGeminiPrompt(imageParts.map(p => p.imageType));
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: geminiPrompt },
-              ...imageParts.map(p => ({ inline_data: { mime_type: p.mime_type, data: p.data } }))
-            ]
-          }],
-          generationConfig: {
-            responseMimeType: 'application/json'
-          }
-        })
-      }
-    );
+    let geminiRes: Response | undefined;
 
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      throw new Error(`Gemini API error (${geminiRes.status}): ${errText}`);
+    // Using gemini-3.5-flash-lite: confirmed reliable free-tier model with
+    // generous quota. (Do NOT switch to gemini-3.8-flash or other newer/
+    // higher-demand models without checking availability first — they
+    // return 503 UNAVAILABLE far more often.)
+    const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+
+    // Retry temporary Gemini 503 overload errors with exponential backoff.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: geminiPrompt },
+                ...imageParts.map(p => ({ inline_data: { mime_type: p.mime_type, data: p.data } }))
+              ]
+            }],
+            generationConfig: {
+              responseMimeType: 'application/json'
+            }
+          })
+        }
+      );
+
+      if (geminiRes.ok) break;
+
+      // Only retry temporary overloads. Other errors are returned immediately.
+      if (geminiRes.status !== 503) break;
+
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+      }
+    }
+
+    if (!geminiRes || !geminiRes.ok) {
+      const errText = geminiRes ? await geminiRes.text() : 'No response from Gemini API';
+      throw new Error(`Gemini API error (${geminiRes?.status ?? 'unknown'}): ${errText}`);
     }
 
     const geminiData = await geminiRes.json();
@@ -95,7 +115,7 @@ Deno.serve(async (req) => {
 
     await supabase.from('ocr_results').insert({
       scan_id: scanId,
-      provider: 'gemini-3.5-flash-lite',
+      provider: GEMINI_MODEL,
       raw_text: rawText,
       confidence: null,
       blocks_json: null
@@ -118,7 +138,7 @@ Deno.serve(async (req) => {
         value: d.value,
         present: d.present,
         confidence: d.confidence,
-        source: 'gemini-3.5-flash-lite'
+        source: GEMINI_MODEL
       }))
     );
 
