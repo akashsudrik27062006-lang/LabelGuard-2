@@ -369,46 +369,19 @@ export async function getDashboardStats() {
 // Fetch a signed, temporary viewing URL for a complaint's evidence photo
 // (the actual product image from the scan the consumer filed this from).
 export async function getEvidenceImageUrl(productId: string): Promise<string | null> {
-  const { data: images, error: imagesErr } = await supabase
+  const { data: images } = await supabase
     .from('product_images')
     .select('storage_path, image_type')
     .eq('product_id', productId)
     .order('created_at', { ascending: true });
+  if (!images || images.length === 0) return null;
 
-  if (imagesErr || !images || images.length === 0) {
-    console.warn('[getEvidenceImageUrl] no image rows for product', productId, imagesErr);
-    return null;
-  }
+  const image = images.find(i => i.image_type === 'FRONT') ?? images[0];
 
-  const image =
-    images.find(i => String(i.image_type ?? '').toUpperCase() === 'FRONT') ??
-    images[0];
-
-  // First try a temporary signed URL for private buckets.
-  const { data: signed, error: signErr } = await supabase.storage
+  const { data: signed } = await supabase.storage
     .from('product-images')
-    .createSignedUrl(image.storage_path, 3600);
-
-  if (signed?.signedUrl) return signed.signedUrl;
-
-  // Fallback: download the object through Supabase Storage and create a
-  // browser-local object URL. This avoids depending on signed/public URL
-  // generation for the comparison screen.
-  const { data: blob, error: downloadErr } = await supabase.storage
-    .from('product-images')
-    .download(image.storage_path);
-
-  if (blob) return URL.createObjectURL(blob);
-
-  // Final fallback for public buckets.
-  const { data: publicData } = supabase.storage
-    .from('product-images')
-    .getPublicUrl(image.storage_path);
-
-  if (publicData?.publicUrl) return publicData.publicUrl;
-
-  console.warn('[getEvidenceImageUrl] could not load image for', image.storage_path, { signErr, downloadErr });
-  return null;
+    .createSignedUrl(image.storage_path, 600);
+  return signed?.signedUrl ?? null;
 }
 
 // Fetch ALL evidence images for a product (front/back/strip), each with its
@@ -637,14 +610,13 @@ export async function compareVersionsDetailed(productIdA: string, productIdB: st
     if (!scan) return null;
     const { data: violations } = await supabase.from('violations').select('*, rules(*)').eq('scan_id', scan.id);
     const { data: declarations } = await supabase.from('declarations').select('*').eq('scan_id', scan.id);
-    // Comparison only needs one image per version: the front-panel artwork.
-    // The helper tries a signed URL first and a public URL as fallback.
-    const imageUrl = await getEvidenceImageUrl(productId);
+    const images = await getAllEvidenceImages(productId);
+    const frontImage = images.find(i => i.type === 'FRONT') ?? images[0];
     return {
       scan,
       violations: violations ?? [],
       declarations: declarations ?? [],
-      imageUrl,
+      imageUrl: frontImage?.url ?? null,
     };
   };
   const [a, b] = await Promise.all([fetchFull(productIdA), fetchFull(productIdB)]);
