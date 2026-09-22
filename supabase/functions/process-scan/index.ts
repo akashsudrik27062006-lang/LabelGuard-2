@@ -44,19 +44,31 @@ Deno.serve(async (req) => {
       .from('product_images').select('*').eq('product_id', scan.product_id).order('created_at', { ascending: true });
     if (!images || images.length === 0) throw new Error('No product image found for this scan');
 
-    const imageParts: { mime_type: string; data: string; imageType: string }[] = [];
-    for (const image of images) {
-      const { data: signedUrlData } = await supabase.storage
-        .from('product-images').createSignedUrl(image.storage_path, 300);
-      const imageUrl = signedUrlData?.signedUrl;
-      if (!imageUrl) continue;
+    // Load all product images in parallel to reduce preprocessing time.
+    const loadedImageParts = await Promise.all(
+      images.map(async image => {
+        const { data: signedUrlData } = await supabase.storage
+          .from('product-images').createSignedUrl(image.storage_path, 300);
+        const imageUrl = signedUrlData?.signedUrl;
+        if (!imageUrl) return null;
 
-      const imageResp = await fetch(imageUrl);
-      const imageBuffer = await imageResp.arrayBuffer();
-      const imageBase64 = base64Encode(imageBuffer);
-      const mimeType = imageResp.headers.get('content-type') || 'image/jpeg';
-      imageParts.push({ mime_type: mimeType, data: imageBase64, imageType: image.image_type ?? 'LABEL' });
-    }
+        const imageResp = await fetch(imageUrl);
+        const imageBuffer = await imageResp.arrayBuffer();
+        const imageBase64 = base64Encode(imageBuffer);
+        const mimeType = imageResp.headers.get('content-type') || 'image/jpeg';
+
+        return {
+          mime_type: mimeType,
+          data: imageBase64,
+          imageType: image.image_type ?? 'LABEL'
+        };
+      })
+    );
+
+    const imageParts = loadedImageParts.filter(
+      (p): p is { mime_type: string; data: string; imageType: string } => p !== null
+    );
+
     if (imageParts.length === 0) throw new Error('Could not load any product images');
 
     // ---- 2. Gemini: read ALL images together (front/back/strip are the SAME
@@ -65,16 +77,13 @@ Deno.serve(async (req) => {
     const geminiPrompt = buildGeminiPrompt(imageParts.map(p => p.imageType));
     let geminiRes: Response | undefined;
 
-    // Using gemini-3.5-flash-lite: confirmed reliable free-tier model with
-    // generous quota. (Do NOT switch to gemini-3.8-flash or other newer/
-    // higher-demand models without checking availability first — they
-    // return 503 UNAVAILABLE far more often.)
-    const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+    // Fetch active rules while Gemini is processing so these operations overlap.
+    const rulesPromise = supabase.from('rules').select('*').eq('active', true);
 
     // Retry temporary Gemini 503 overload errors with exponential backoff.
     for (let attempt = 0; attempt < 3; attempt++) {
       geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -113,14 +122,6 @@ Deno.serve(async (req) => {
     const rawText: string = parsed.raw_text_seen ?? '';
     const fields = parsed.fields ?? parsed; // tolerate either shape
 
-    await supabase.from('ocr_results').insert({
-      scan_id: scanId,
-      provider: GEMINI_MODEL,
-      raw_text: rawText,
-      confidence: null,
-      blocks_json: null
-    });
-
     const declarations: Declaration[] = DECLARATION_FIELDS.map(field => {
       const entry = fields[field] ?? { value: null, present: false, confidence: 0 };
       return {
@@ -131,19 +132,32 @@ Deno.serve(async (req) => {
       };
     });
 
-    await supabase.from('declarations').insert(
-      declarations.map(d => ({
+    // Persist independent records while finishing the already-started rules query.
+    const [, , rulesResult] = await Promise.all([
+      supabase.from('ocr_results').insert({
         scan_id: scanId,
-        field: d.field,
-        value: d.value,
-        present: d.present,
-        confidence: d.confidence,
-        source: GEMINI_MODEL
-      }))
-    );
+        provider: 'gemini-3.5-flash-lite',
+        raw_text: rawText,
+        confidence: null,
+        blocks_json: null
+      }),
+
+      supabase.from('declarations').insert(
+        declarations.map(d => ({
+          scan_id: scanId,
+          field: d.field,
+          value: d.value,
+          present: d.present,
+          confidence: d.confidence,
+          source: 'gemini-3.5-flash-lite'
+        }))
+      ),
+
+      rulesPromise
+    ]);
 
     // ---- 3. Deterministic rule engine (NO LLM) ----
-    const { data: rulesData } = await supabase.from('rules').select('*').eq('active', true);
+    const { data: rulesData } = rulesResult;
     const rules: Rule[] = (rulesData ?? []) as Rule[];
     const violations = runRuleEngine(declarations, rules, Boolean(scan.products?.is_imported));
     const score = computeScore(rules.length, violations);
@@ -171,24 +185,27 @@ Deno.serve(async (req) => {
       completed_at: new Date().toISOString()
     }).eq('id', scanId);
 
-    await supabase.from('audit_logs').insert({
-      user_id: scan.user_id,
-      action: 'SCAN_COMPLETED',
-      entity_type: 'scans',
-      entity_id: scanId,
-      metadata: { score, status, violationCount: violations.length }
-    });
+    // These writes are independent, so perform them together.
+    await Promise.all([
+      supabase.from('audit_logs').insert({
+        user_id: scan.user_id,
+        action: 'SCAN_COMPLETED',
+        entity_type: 'scans',
+        entity_id: scanId,
+        metadata: { score, status, violationCount: violations.length }
+      }),
 
-    // Real in-app notification for the person who ran the scan
-    await supabase.from('notifications').insert({
-      user_id: scan.user_id,
-      title: status === 'COMPLIANT' ? 'Scan complete: fully compliant' : `Scan complete: ${violations.length} issue(s) found`,
-      message: status === 'COMPLIANT'
-        ? `${scan.products?.name ?? 'Your product'} passed all Legal Metrology checks with a score of ${score}/100.`
-        : `${scan.products?.name ?? 'Your product'} scored ${score}/100 with ${violations.length} declaration issue(s) found.`,
-      type: status === 'COMPLIANT' ? 'SUCCESS' : 'WARNING',
-      read: false
-    });
+      // Real in-app notification for the person who ran the scan
+      supabase.from('notifications').insert({
+        user_id: scan.user_id,
+        title: status === 'COMPLIANT' ? 'Scan complete: fully compliant' : `Scan complete: ${violations.length} issue(s) found`,
+        message: status === 'COMPLIANT'
+          ? `${scan.products?.name ?? 'Your product'} passed all Legal Metrology checks with a score of ${score}/100.`
+          : `${scan.products?.name ?? 'Your product'} scored ${score}/100 with ${violations.length} declaration issue(s) found.`,
+        type: status === 'COMPLIANT' ? 'SUCCESS' : 'WARNING',
+        read: false
+      })
+    ]);
 
     return json({ scanId, status, score, violations, declarations }, 200, cors);
   } catch (err) {
