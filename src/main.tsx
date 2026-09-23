@@ -473,22 +473,36 @@ function Scanner({ done, role, productGroup, versionLabel, lockedProductName }: 
   return (
     <section className="scanner">
       <div className="sample-picker">
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '360px' }}>
-          <b>Product Name</b>
-          <input
-            type="text"
-            placeholder="e.g. Amul Ghee 500g"
-            value={productName}
-            onChange={e => setProductName(e.target.value)}
-            disabled={loading}
-            style={{ padding: '10px 12px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}
-          />
-        </label>
+        {lockedProductName ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '560px' }}>
+            <b>Product</b>
+            <div style={{ padding: '12px 14px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-subtle)' }}>
+              <strong>{lockedProductName}</strong>
+            </div>
+            {versionLabel && (
+              <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                Uploading revised artwork as <b>{versionLabel}</b>
+              </span>
+            )}
+          </div>
+        ) : (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '360px' }}>
+            <b>Product Name</b>
+            <input
+              type="text"
+              placeholder="e.g. Amul Ghee 500g"
+              value={productName}
+              onChange={e => setProductName(e.target.value)}
+              disabled={loading}
+              style={{ padding: '10px 12px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}
+            />
+          </label>
+        )}
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontWeight: 500, fontSize: '13px' }}>
           <input type="checkbox" checked={isImported} onChange={e => setIsImported(e.target.checked)} disabled={loading} style={{ width: 'auto' }} />
           This product is imported (Country of Origin declaration will be checked)
         </label>
-        {versionLabel && (
+        {!lockedProductName && versionLabel && (
           <div style={{ marginTop: '8px' }}>
             <span className="badge good">Uploading as {versionLabel}</span>
           </div>
@@ -3008,7 +3022,6 @@ function ManufacturerRoutes({ scanResult, setScanResult, nav }: {
         </>
       )} />
       <Route path="history" element={<ManufacturerVersionHistoryPage setScanResult={setScanResult} />} />
-      <Route path="label-generator" element={<LabelGenerator />} />
     </Routes>
   );
 }
@@ -3044,7 +3057,6 @@ function AppShell() {
       { label: 'Package Check', path: 'scan', icon: <Camera size={17} /> },
       { label: 'Correction Recommendations', path: 'recommendations', icon: <AlertTriangle size={17} /> },
       { label: 'Version Comparison', path: 'version-comparison', icon: <ArrowLeftRight size={17} /> },
-      { label: 'Label Generator', path: 'label-generator', icon: <Sparkles size={17} /> },
       { label: 'Compliance History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
     seller: [
