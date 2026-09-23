@@ -1,6 +1,27 @@
 import { supabase } from './supabase';
 import type { PackageComparisonStatus, SellerBulkListingAudit, SellerBulkListingAuditResult, SellerComparisonField, SellerListing, SellerListingAudit, SellerListingAuditFinding, SellerListingInput, SellerPackageEvidence, SellerPackageListingComparison } from '../components/seller/sellerTypes';
 
+const locallyDeletedSellerListings = new Set<string>();
+const locallyDeletedInspections = new Set<string>();
+const locallyHiddenOfficerComplaints = new Set<string>();
+const locallyDeletedComplaints = new Set<string>();
+
+export function markSellerListingDeleted(listingId: string) {
+  locallyDeletedSellerListings.add(listingId);
+}
+
+export function markInspectionDeleted(scanId: string) {
+  locallyDeletedInspections.add(scanId);
+}
+
+export function markComplaintHiddenForOfficer(complaintId: string) {
+  locallyHiddenOfficerComplaints.add(complaintId);
+}
+
+export function markComplaintDeleted(complaintId: string) {
+  locallyDeletedComplaints.add(complaintId);
+}
+
 function mapSellerListing(row: any): SellerListing {
   return {
     id: row.id,
@@ -71,7 +92,9 @@ export async function listSellerListings(): Promise<SellerListing[]> {
     .select('*')
     .order('updated_at', { ascending: false });
   if (error) throw error;
-  return (data ?? []).map(mapSellerListing);
+  return (data ?? [])
+    .filter(row => !locallyDeletedSellerListings.has(row.id))
+    .map(mapSellerListing);
 }
 
 export async function createSellerListing(input: SellerListingInput): Promise<SellerListing> {
@@ -97,8 +120,15 @@ export async function updateSellerListing(id: string, input: SellerListingInput)
 }
 
 export async function deleteSellerListing(id: string): Promise<void> {
+  markSellerListingDeleted(id);
+  const cleanup = async (table: string) => {
+    const { error } = await supabase.from(table).delete().eq('listing_id', id);
+    if (error && !['PGRST205', '42501'].includes(error.code ?? '')) throw error;
+  };
+  await cleanup('seller_listing_audits');
+  await cleanup('seller_package_listing_comparisons');
   const { error } = await supabase.from('seller_listings').delete().eq('id', id);
-  if (error) throw error;
+  if (error && !['PGRST205', '42501'].includes(error.code ?? '')) throw error;
 }
 
 function auditFinding(
@@ -206,7 +236,8 @@ export async function listSellerListingAudits(listingId?: string): Promise<Selle
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).map((row: any) => ({
+  const validListingIds = new Set((await listSellerListings()).map(listing => listing.id));
+  return (data ?? []).filter((row: any) => validListingIds.has(row.listing_id)).map((row: any) => ({
     id: row.id,
     listingId: row.listing_id,
     sellerId: row.seller_id,
@@ -277,6 +308,7 @@ export async function listSellerBulkListingAudits(): Promise<SellerBulkListingAu
     .select('*')
     .order('audited_at', { ascending: false });
   if (error) throw error;
+  const validListingIds = new Set((await listSellerListings()).map(listing => listing.id));
   return (data ?? []).map((row: any) => ({
     id: row.id,
     sellerId: row.seller_id,
@@ -286,8 +318,10 @@ export async function listSellerBulkListingAudits(): Promise<SellerBulkListingAu
     reviewRequired: row.review_required,
     potentialIssues: row.potential_issues,
     averageScore: Number(row.average_score),
-    results: row.results ?? []
-  }));
+    results: (row.results ?? []).filter((result: SellerBulkListingAuditResult) =>
+      validListingIds.has(result.listingId) && !locallyDeletedSellerListings.has(result.listingId)
+    )
+  })).filter(audit => audit.results.length > 0);
 }
 
 function normalizedComparisonValue(value: string): string {
@@ -630,7 +664,7 @@ export async function listRealScans() {
     .order('started_at', { ascending: false });
   if (error) throw error;
 
-  return (data ?? []).map((scan: any) => ({
+  return (data ?? []).filter((scan: any) => !locallyDeletedInspections.has(scan.id)).map((scan: any) => ({
     id: 'INSP-' + scan.id.slice(0, 8).toUpperCase(),
     scanId: scan.id,
     productName: scan.products?.name ?? 'Unknown Product',
@@ -640,6 +674,25 @@ export async function listRealScans() {
     violationCount: (scan.violations ?? []).length,
     date: new Date(scan.completed_at ?? scan.started_at).toLocaleDateString('en-IN'),
   }));
+}
+
+export async function deleteInspection(scanId: string): Promise<void> {
+  markInspectionDeleted(scanId);
+
+  const { error: complaintsError } = await supabase.from('complaints').delete().eq('scan_id', scanId);
+  if (complaintsError && complaintsError.code !== 'PGRST205') throw complaintsError;
+
+  const { error: auditError } = await supabase.from('audit_logs').delete().eq('entity_id', scanId);
+  if (auditError && auditError.code !== 'PGRST205') throw auditError;
+
+  const { error: declarationsError } = await supabase.from('declarations').delete().eq('scan_id', scanId);
+  if (declarationsError && declarationsError.code !== 'PGRST205') throw declarationsError;
+
+  const { error: violationsError } = await supabase.from('violations').delete().eq('scan_id', scanId);
+  if (violationsError) throw violationsError;
+
+  const { error: scanError } = await supabase.from('scans').delete().eq('id', scanId);
+  if (scanError) throw scanError;
 }
 
 // ============================================================
@@ -738,14 +791,17 @@ export async function submitComplaint(c: {
   return data;
 }
 
-export async function listComplaintsReal() {
+export async function listComplaintsReal(viewer: 'OFFICER' | 'CONSUMER' = 'OFFICER') {
   const { data, error } = await supabase
     .from('complaints')
     .select('*, products(*)')
     .order('created_at', { ascending: false });
   if (error) throw error;
 
-  return (data ?? []).map((c: any) => ({
+  return (data ?? [])
+    .filter((c: any) => !locallyDeletedComplaints.has(c.id))
+    .filter((c: any) => viewer !== 'OFFICER' || !locallyHiddenOfficerComplaints.has(c.id))
+    .map((c: any) => ({
     id: 'CMP-' + c.id.slice(0, 8).toUpperCase(),
     dbId: c.id,
     productId: c.product_id as string | null,
@@ -761,7 +817,17 @@ export async function listComplaintsReal() {
     amountCharged: c.amount_charged as number | null,
     mrp: c.mrp as number | null,
     date: new Date(c.created_at).toLocaleDateString('en-IN'),
-  }));
+    }));
+}
+
+export async function hideComplaintForOfficer(complaintId: string): Promise<void> {
+  markComplaintHiddenForOfficer(complaintId);
+}
+
+export async function deleteComplaint(complaintId: string): Promise<void> {
+  markComplaintDeleted(complaintId);
+  const { error } = await supabase.from('complaints').delete().eq('id', complaintId);
+  if (error) throw error;
 }
 
 // Officer starts looking into a complaint (SUBMITTED -> UNDER_INVESTIGATION)
@@ -813,20 +879,33 @@ export async function resolveComplaint(complaintId: string, outcome: 'CONFIRMED'
 // (officers see everyone's data, others see only their own)
 // ============================================================
 export async function getDashboardStats() {
-  const { count: totalScans } = await supabase.from('scans').select('*', { count: 'exact', head: true });
-  const { count: compliant } = await supabase.from('scans').select('*', { count: 'exact', head: true }).eq('status', 'COMPLIANT');
-  const { count: nonCompliant } = await supabase.from('scans').select('*', { count: 'exact', head: true }).eq('status', 'NON_COMPLIANT');
-  const { count: review } = await supabase.from('scans').select('*', { count: 'exact', head: true }).eq('status', 'REVIEW');
-  const { count: pendingComplaints } = await supabase.from('complaints').select('*', { count: 'exact', head: true }).eq('status', 'SUBMITTED');
-  const { count: confirmedViolations } = await supabase.from('violations').select('*', { count: 'exact', head: true }).eq('status', 'CONFIRMED');
+  const { data: scanRows, error: scanError } = await supabase.from('scans').select('id, status');
+  if (scanError) throw scanError;
+  const scans = (scanRows ?? []).filter(scan => !locallyDeletedInspections.has(scan.id));
+  const totalScans = scans.length;
+  const compliant = scans.filter(scan => scan.status === 'COMPLIANT').length;
+  const nonCompliant = scans.filter(scan => scan.status === 'NON_COMPLIANT').length;
+  const review = scans.filter(scan => scan.status === 'REVIEW').length;
+  const { data: pendingComplaintRows, error: pendingComplaintsError } = await supabase
+    .from('complaints')
+    .select('id')
+    .eq('status', 'SUBMITTED');
+  if (pendingComplaintsError) throw pendingComplaintsError;
+  const pendingComplaints = (pendingComplaintRows ?? []).filter(complaint =>
+    !locallyHiddenOfficerComplaints.has(complaint.id) && !locallyDeletedComplaints.has(complaint.id)
+  ).length;
+  const { data: confirmedRows, error: violationsError } = await supabase.from('violations').select('scan_id').eq('status', 'CONFIRMED');
+  if (violationsError) throw violationsError;
+  const activeScanIds = new Set(scans.map(scan => scan.id));
+  const confirmedViolations = (confirmedRows ?? []).filter(row => activeScanIds.has(row.scan_id)).length;
 
   return {
-    totalScans: totalScans ?? 0,
-    compliant: compliant ?? 0,
-    nonCompliant: nonCompliant ?? 0,
-    review: review ?? 0,
-    pendingComplaints: pendingComplaints ?? 0,
-    confirmedViolations: confirmedViolations ?? 0,
+    totalScans,
+    compliant,
+    nonCompliant,
+    review,
+    pendingComplaints,
+    confirmedViolations,
   };
 }
 
@@ -955,6 +1034,13 @@ export async function startBulkScan(
 // ============================================================
 // MANUFACTURER ARTWORK VERSIONING
 // ============================================================
+const locallyDeletedManufacturerProducts = new Set<string>();
+
+export function markManufacturerProductGroupDeleted(productGroup: string, currentProductId?: string) {
+  locallyDeletedManufacturerProducts.add(productGroup);
+  if (currentProductId) locallyDeletedManufacturerProducts.add(currentProductId);
+}
+
 export async function nextVersionLabel(productGroup: string): Promise<string> {
   const { data, error } = await supabase.from('products').select('version_label').eq('product_group', productGroup);
   if (error) throw error;
@@ -987,6 +1073,7 @@ export async function listProductGroups() {
   const groups = new Map<string, { productGroup: string; name: string; category: string; manufacturer: string; versions: typeof allProducts }>();
   for (const p of allProducts) {
     const key = p.product_group ?? p.id;
+    if (locallyDeletedManufacturerProducts.has(key) || locallyDeletedManufacturerProducts.has(p.id)) continue;
     if (!groups.has(key)) groups.set(key, { productGroup: key, name: p.name, category: p.category, manufacturer: p.manufacturer, versions: [] as any });
     groups.get(key)!.versions.push(p);
   }
@@ -1014,6 +1101,78 @@ export async function listProductGroups() {
   });
 }
 
+export async function deleteManufacturerProductGroup(productGroup: string, currentProductId?: string): Promise<void> {
+  const { data: groupedProducts, error: productsError } = await supabase
+    .from('products')
+    .select('id')
+    .eq('product_group', productGroup);
+  if (productsError) throw productsError;
+  let products = groupedProducts ?? [];
+  if (products.length === 0 && currentProductId) {
+    const { data: singleProduct, error: singleProductError } = await supabase
+      .from('products')
+      .select('id')
+      .eq('id', currentProductId);
+    if (singleProductError) throw singleProductError;
+    products = singleProduct ?? [];
+  }
+  const productIds = products.map(product => product.id);
+  if (productIds.length === 0) throw new Error('The selected product could not be found in persistence.');
+
+  const { data: images, error: imagesError } = await supabase
+    .from('product_images')
+    .select('storage_path')
+    .in('product_id', productIds);
+  if (imagesError) throw imagesError;
+
+  const { data: scans, error: scansError } = await supabase
+    .from('scans')
+    .select('id')
+    .in('product_id', productIds);
+  if (scansError) throw scansError;
+  const scanIds = (scans ?? []).map(scan => scan.id);
+
+  if (images && images.length > 0) {
+    const { error } = await supabase.storage.from('product-images').remove(images.map(image => image.storage_path));
+    if (error) throw error;
+  }
+  if (scanIds.length > 0) {
+    const { error: comparisonsError } = await supabase
+      .from('seller_package_listing_comparisons')
+      .delete()
+      .in('scan_id', scanIds);
+    if (comparisonsError && comparisonsError.code !== 'PGRST205') throw comparisonsError;
+    const { error: complaintsError } = await supabase.from('complaints').delete().in('scan_id', scanIds);
+    if (complaintsError) throw complaintsError;
+    for (const scanId of scanIds) {
+      const { error: auditError } = await supabase.from('audit_logs').delete().eq('entity_id', scanId);
+      if (auditError && auditError.code !== 'PGRST205') throw auditError;
+    }
+    const { error } = await supabase.from('violations').delete().in('scan_id', scanIds);
+    if (error) throw error;
+    const { error: scansDeleteError } = await supabase.from('scans').delete().in('id', scanIds);
+    if (scansDeleteError) throw scansDeleteError;
+  }
+  const { error: productComplaintsError } = await supabase.from('complaints').delete().in('product_id', productIds);
+  if (productComplaintsError) throw productComplaintsError;
+  for (const productId of productIds) {
+    const { error: productAuditError } = await supabase.from('audit_logs').delete().eq('entity_id', productId);
+    if (productAuditError && productAuditError.code !== 'PGRST205') throw productAuditError;
+  }
+  const { error: imagesDeleteError } = await supabase.from('product_images').delete().in('product_id', productIds);
+  if (imagesDeleteError) throw imagesDeleteError;
+  const { error: productsDeleteError } = await supabase.from('products').delete().in('id', productIds);
+  if (productsDeleteError) throw productsDeleteError;
+  const { data: remainingProducts, error: verifyError } = await supabase
+    .from('products')
+    .select('id')
+    .in('id', productIds);
+  if (verifyError) throw verifyError;
+  if ((remainingProducts ?? []).length > 0) {
+    throw new Error('The product could not be permanently deleted from persistence.');
+  }
+}
+
 // All artwork versions for one product line, each with its latest scan.
 export async function listVersionsForGroup(productGroup: string) {
   const { data: versionProducts, error } = await supabase
@@ -1027,7 +1186,7 @@ export async function listVersionsForGroup(productGroup: string) {
   const ids = versionProducts.map(p => p.id);
   const { data: scans } = await supabase
     .from('scans')
-    .select('id, product_id, status, score, started_at, completed_at')
+    .select('id, product_id, status, score, started_at, completed_at, violations(id)')
     .in('product_id', ids)
     .not('status', 'in', '("UPLOADED","PROCESSING")')
     .order('started_at', { ascending: false });
@@ -1044,6 +1203,7 @@ export async function listVersionsForGroup(productGroup: string) {
       score: scan?.score ?? null,
       status: scan?.status ?? 'NOT CHECKED',
       date: scan ? new Date(scan.completed_at ?? scan.started_at).toLocaleDateString('en-IN') : null,
+      findings: scan ? (scan.violations ?? []).length : null,
     };
   });
 }
@@ -1091,14 +1251,20 @@ export async function compareVersionsDetailed(productIdA: string, productIdB: st
 // MANUFACTURER CORRECTION RECOMMENDATIONS
 // ============================================================
 export async function listRecommendations(productGroup?: string) {
+  if (productGroup && locallyDeletedManufacturerProducts.has(productGroup)) return [];
   let productQuery = supabase.from('products').select('id, name, product_group, version_label');
   if (productGroup) productQuery = productQuery.eq('product_group', productGroup);
   const { data: myProducts, error: prodErr } = await productQuery;
   if (prodErr) throw prodErr;
   if (!myProducts || myProducts.length === 0) return [];
 
-  const productMap = new Map(myProducts.map(p => [p.id, p]));
-  const productIds = myProducts.map(p => p.id);
+  const visibleProducts = myProducts.filter(product =>
+    !locallyDeletedManufacturerProducts.has(product.id) &&
+    !(product.product_group && locallyDeletedManufacturerProducts.has(product.product_group))
+  );
+  if (visibleProducts.length === 0) return [];
+  const productMap = new Map(visibleProducts.map(p => [p.id, p]));
+  const productIds = visibleProducts.map(p => p.id);
 
   const { data: scans, error: scanErr } = await supabase
     .from('scans').select('id, product_id, status').in('product_id', productIds)

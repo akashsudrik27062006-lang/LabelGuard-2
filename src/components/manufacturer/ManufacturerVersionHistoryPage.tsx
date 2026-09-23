@@ -76,8 +76,8 @@ export default function ManufacturerVersionHistoryPage({ setScanResult }: {
   return (
     <main className="manufacturer-history">
       <div className="manufacturer-history-header">
-        <span className="eyebrow">VERSION HISTORY</span>
-        <h1>View Artwork Version History</h1>
+        <span className="eyebrow">COMPLIANCE HISTORY</span>
+        <h1>View Compliance History</h1>
         <p>The central record of every saved artwork version with timestamps and compliance status.</p>
       </div>
 
@@ -93,7 +93,7 @@ export default function ManufacturerVersionHistoryPage({ setScanResult }: {
 
       <section className="manufacturer-history-table-card">
         {loading ? (
-          <div className="manufacturer-history-table-state">Loading version history...</div>
+          <div className="manufacturer-history-table-state">Loading compliance history...</div>
         ) : visibleRows.length === 0 ? (
           <div className="manufacturer-history-table-state">
             <FileText size={34} />

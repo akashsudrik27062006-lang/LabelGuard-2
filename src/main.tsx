@@ -6,11 +6,11 @@ import {
   ShieldCheck, CheckCircle2, AlertTriangle, XCircle, Upload, FileText, LogOut, Search,
   Camera, LayoutDashboard, History as HistoryIcon, ClipboardCheck, Flag, RefreshCw,
   Printer, MapPin, ExternalLink, ArrowRight, Sparkles, BookOpen, Check,
-  MessageSquare, ArrowLeftRight, ShieldAlert, PhoneCall, AlertCircle
+  MessageSquare, ArrowLeftRight, ShieldAlert, PhoneCall, AlertCircle, Trash2
 } from 'lucide-react';
 import './styles.css';
 import { supabase } from './lib/supabase';
-import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, getAllEvidenceImages, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan, listProductGroups, listVersionsForGroup, compareVersions, compareVersionsDetailed, FIELD_LABELS, listRecommendations, setManufacturerAction, nextVersionLabel, listManufacturerChecks } from './lib/api';
+import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, getAllEvidenceImages, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan, listProductGroups, listVersionsForGroup, deleteManufacturerProductGroup, markManufacturerProductGroupDeleted, compareVersions, compareVersionsDetailed, FIELD_LABELS, listRecommendations, setManufacturerAction, nextVersionLabel, listManufacturerChecks, listSellerListings, deleteInspection, markInspectionDeleted, hideComplaintForOfficer, deleteComplaint } from './lib/api';
 import SellerListingsPage from './components/seller/SellerListingsPage';
 import SellerListingAuditPage from './components/seller/SellerListingAuditPage';
 import SellerListingComparisonPage from './components/seller/SellerListingComparisonPage';
@@ -808,6 +808,8 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
   const [busy, setBusy] = useState(false);
   const [evidenceImages, setEvidenceImages] = useState<{ url: string; type: string }[] | undefined>();
   const [loadingReport, setLoadingReport] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const nav = useNavigate();
 
   const overcharge = c.amountCharged != null && c.mrp != null ? c.amountCharged - c.mrp : null;
@@ -853,6 +855,15 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
     finally { setBusy(false); }
   };
 
+  const removeFromQueue = async () => {
+    if (!c.dbId) return;
+    setDeleting(true);
+    try { await hideComplaintForOfficer(c.dbId); } catch (error) { console.error('Failed to hide complaint:', error); }
+    setDeleteOpen(false);
+    setDeleting(false);
+    onRefresh();
+  };
+
   return (
     <>
       <tr onClick={() => setExpanded(x => !x)} style={{ cursor: 'pointer' }}>
@@ -861,7 +872,14 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
         <td>{c.issueType}</td>
         <td className="num">{c.date}</td>
         <td><span className={'badge ' + statusBadgeClass}>{c.status.replace(/_/g, ' ')}</span></td>
-        <td><button className="linkbtn">{expanded ? 'Hide' : 'View / Act'} <ArrowRight size={13} /></button></td>
+        <td>
+          <div className="manufacturer-product-actions">
+            <button className="linkbtn">{expanded ? 'Hide' : 'View / Act'} <ArrowRight size={13} /></button>
+            <button className="linkbtn danger" onClick={event => { event.stopPropagation(); setDeleteOpen(true); }} disabled={busy}>
+              <Trash2 size={14} /> Delete
+            </button>
+          </div>
+        </td>
       </tr>
       {expanded && (
         <tr>
@@ -932,6 +950,8 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
                 </button>
               )}
 
+
+
               {c.status === 'UNDER_INVESTIGATION' && (
                 <div>
                   <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', fontSize: '13px' }}>
@@ -966,6 +986,22 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
             </div>
           </td>
         </tr>
+      )}
+      {deleteOpen && (
+        <div className="manufacturer-delete-backdrop" role="presentation">
+          <section className="manufacturer-delete-modal" role="dialog" aria-modal="true" aria-labelledby="remove-complaint-title">
+            <span className="eyebrow">OFFICER ACTION</span>
+            <h2 id="remove-complaint-title">Remove Complaint from Queue?</h2>
+            <p>This complaint will be removed from your Officer complaint queue.</p>
+            <p>The consumer's submitted complaint will remain available to the consumer.</p>
+            <div className="manufacturer-delete-actions">
+              <button className="btn outline" onClick={() => setDeleteOpen(false)} disabled={deleting}>Cancel</button>
+              <button className="btn manufacturer-delete-confirm" onClick={removeFromQueue} disabled={deleting}>
+                {deleting ? 'Removing...' : 'Remove from Queue'}
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </>
   );
@@ -1183,6 +1219,8 @@ function ProductsArtwork({ setScanResult }: {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string>();
   const [versionsByGroup, setVersionsByGroup] = useState<Record<string, Awaited<ReturnType<typeof listVersionsForGroup>>>>({});
+  const [deleteTarget, setDeleteTarget] = useState<Awaited<ReturnType<typeof listProductGroups>>[number]>();
+  const [deletingGroup, setDeletingGroup] = useState<string>();
 
   const load = () => {
     setLoading(true);
@@ -1202,6 +1240,23 @@ function ProductsArtwork({ setScanResult }: {
   const openVersionReport = async (scanId: string) => {
     const backendResult = await getScanResult(scanId);
     nav('/app/report', { state: mapToUiResult(backendResult) });
+  };
+
+  const deleteProduct = async () => {
+    if (!deleteTarget) return;
+    const group = deleteTarget;
+    setDeletingGroup(group.productGroup);
+    markManufacturerProductGroupDeleted(group.productGroup, group.currentProductId);
+    setGroups(current => current.filter(item => item.productGroup !== group.productGroup));
+    setExpanded(current => current === group.productGroup ? undefined : current);
+    setVersionsByGroup(current => {
+      const next = { ...current };
+      delete next[group.productGroup];
+      return next;
+    });
+    setDeleteTarget(undefined);
+    setDeletingGroup(undefined);
+    void deleteManufacturerProductGroup(group.productGroup, group.currentProductId).catch(() => undefined);
   };
 
   return (
@@ -1237,10 +1292,11 @@ function ProductsArtwork({ setScanResult }: {
                     <td><span className={'badge ' + productStatusBadgeCls(g.status)}>{g.status}</span></td>
                     <td className="num">{g.issues}</td>
                     <td>
-                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        <button className="linkbtn" onClick={() => toggleExpand(g.productGroup)}>{expanded === g.productGroup ? 'Hide Versions' : 'View Versions'}</button>
-                        <button className="linkbtn" onClick={() => { setScanResult(undefined); nav('/app/scan', { state: { productGroup: g.productGroup, lockedProductName: g.name } }); }}>Upload New Version</button>
-                        {g.versionCount > 1 && <button className="linkbtn" onClick={() => nav('/app/version-comparison', { state: { productGroup: g.productGroup } })}>Compare</button>}
+                      <div className="manufacturer-product-actions">
+                        <button className="linkbtn" onClick={() => toggleExpand(g.productGroup)}>{expanded === g.productGroup ? 'Hide Versions' : 'Open Product'}</button>
+                        <button className="linkbtn" onClick={() => nav('/app/history')}>View History</button>
+                        <button className="linkbtn" onClick={() => { setScanResult(undefined); nav('/app/scan', { state: { productGroup: g.productGroup, lockedProductName: g.name } }); }}>Upload New Artwork</button>
+                        <button className="linkbtn danger" onClick={() => setDeleteTarget(g)} disabled={deletingGroup === g.productGroup}>{deletingGroup === g.productGroup ? 'Deleting...' : 'Delete Product'}</button>
                       </div>
                     </td>
                   </tr>
@@ -1276,6 +1332,29 @@ function ProductsArtwork({ setScanResult }: {
           </table>
         )}
       </section>
+      {deleteTarget && (
+        <div className="manufacturer-delete-backdrop" role="presentation">
+          <section className="manufacturer-delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-product-title">
+            <span className="eyebrow">PERMANENT ACTION</span>
+            <h2 id="delete-product-title">Delete Product?</h2>
+            <p><strong>{deleteTarget.name}</strong> and all of its saved Manufacturer records will be permanently removed.</p>
+            <h3>This includes:</h3>
+            <ul>
+              <li>Product information</li>
+              <li>All artwork versions</li>
+              <li>Saved compliance checks, findings and recommendations</li>
+              <li>Comparison references</li>
+              <li>Stored artwork images</li>
+            </ul>
+            <div className="manufacturer-delete-actions">
+              <button className="btn outline" onClick={() => { if (!deletingGroup) setDeleteTarget(undefined); }} disabled={Boolean(deletingGroup)}>Cancel</button>
+              <button className="btn manufacturer-delete-confirm" onClick={deleteProduct} disabled={Boolean(deletingGroup)}>
+                {deletingGroup ? 'Deleting...' : 'Delete Product'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }
@@ -1284,16 +1363,20 @@ function Recommendations({ setScanResult }: {
   setScanResult: (r: Result | undefined) => void
 }) {
   const nav = useNavigate();
-  const location = useLocation();
-  const filterGroup = (location.state as { productGroup?: string } | null)?.productGroup;
   const [rows, setRows] = useState<Awaited<ReturnType<typeof listRecommendations>>>([]);
+  const [productGroups, setProductGroups] = useState<Awaited<ReturnType<typeof listProductGroups>>>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string>();
+  const [selectedProduct, setSelectedProduct] = useState('');
+  const [selectedArtwork, setSelectedArtwork] = useState('');
 
   const load = () => {
     setLoading(true);
-    listRecommendations(filterGroup)
-      .then(setRows)
+    Promise.all([listRecommendations(), listProductGroups()])
+      .then(([recommendationRows, groups]) => {
+        setRows(recommendationRows);
+        setProductGroups(groups);
+      })
       .catch(e => alert('Failed to load recommendations: ' + (e as Error).message))
       .finally(() => setLoading(false));
   };
@@ -1308,6 +1391,16 @@ function Recommendations({ setScanResult }: {
   };
 
   const severityCls = (s: string) => s === 'HIGH' ? 'bad' : s === 'MEDIUM' ? 'warn' : 'good';
+  const products = productGroups.map(group => [group.productGroup, group.name] as const);
+  const artworks = Array.from(new Map(
+    rows
+      .filter(row => !selectedProduct || row.productGroup === selectedProduct)
+      .map(row => [`${row.productGroup}::${row.versionLabel}`, `${row.productName} — ${row.versionLabel}`])
+  ).entries());
+  const filteredRows = rows.filter(row =>
+    (!selectedProduct || row.productGroup === selectedProduct) &&
+    (!selectedArtwork || `${row.productGroup}::${row.versionLabel}` === selectedArtwork)
+  );
 
   return (
     <>
@@ -1319,13 +1412,40 @@ function Recommendations({ setScanResult }: {
         </div>
       </div>
 
+      <section className="recommendation-filters panel">
+        <label>
+          <span>Product</span>
+          <select
+            value={selectedProduct}
+            onChange={event => {
+              setSelectedProduct(event.target.value);
+              setSelectedArtwork('');
+            }}
+          >
+            <option value="">All products</option>
+            {products.map(([group, name]) => <option key={group} value={group}>{name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Artwork version</span>
+          <select value={selectedArtwork} onChange={event => setSelectedArtwork(event.target.value)}>
+            <option value="">All Revised Artworks</option>
+            {artworks.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+        </label>
+      </section>
+
       <section className="panel">
         {loading ? (
           <p style={{ padding: '20px' }}>Loading...</p>
-        ) : rows.length === 0 ? (
-          <p style={{ padding: '20px' }}>No open recommendations — every checked artwork has passed all rules.</p>
+        ) : filteredRows.length === 0 ? (
+          <p style={{ padding: '20px' }}>
+            {rows.length === 0
+              ? 'No open recommendations — every checked artwork has passed all rules.'
+              : 'No recommendations found for the selected filters.'}
+          </p>
         ) : (
-          rows.map(row => (
+          filteredRows.map(row => (
             <article key={row.violationId} className="panel" style={{ margin: '14px 0', padding: '18px', background: 'var(--bg-subtle)', borderLeft: `4px solid var(--status-${row.severity === 'HIGH' ? 'bad' : 'warn'})` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
@@ -1364,10 +1484,8 @@ function Recommendations({ setScanResult }: {
 
 function VersionComparison() {
   const nav = useNavigate();
-  const location = useLocation();
-  const preselect = (location.state as { productGroup?: string } | null)?.productGroup;
   const [groups, setGroups] = useState<Awaited<ReturnType<typeof listProductGroups>>>([]);
-  const [productGroup, setProductGroup] = useState(preselect ?? '');
+  const [productGroup, setProductGroup] = useState('');
   const [versions, setVersions] = useState<Awaited<ReturnType<typeof listVersionsForGroup>>>([]);
   const [verAId, setVerAId] = useState('');
   const [verBId, setVerBId] = useState('');
@@ -1378,42 +1496,55 @@ function VersionComparison() {
   React.useEffect(() => { listProductGroups().then(setGroups); }, []);
 
   React.useEffect(() => {
-    if (!productGroup) { setVersions([]); return; }
+    setVersions([]);
+    setVerAId('');
+    setVerBId('');
+    setCompareData(undefined);
+    setComparisonImages({});
+    if (!productGroup) return;
     listVersionsForGroup(productGroup).then(vs => {
       setVersions(vs);
       setVerAId(vs[0]?.productId ?? '');
-      setVerBId(vs[1]?.productId ?? vs[0]?.productId ?? '');
+      setVerBId(vs[1]?.productId ?? '');
     });
   }, [productGroup]);
 
-  React.useEffect(() => {
-    if (!verAId || !verBId) return;
+  const runComparison = async () => {
+    if (!verAId || !verBId || verAId === verBId) return;
     setLoading(true);
     setCompareData(undefined);
 
-    compareVersionsDetailed(verAId, verBId)
-      .then(async data => {
-        // The API normally returns the image URL. If a signed URL could not be
-        // produced on the first comparison request, make one direct fallback
-        // request for each selected version so the artwork still appears.
-        const [fallbackA, fallbackB] = await Promise.all([
-          data.a?.imageUrl ? Promise.resolve(data.a.imageUrl) : getEvidenceImageUrl(verAId),
-          data.b?.imageUrl ? Promise.resolve(data.b.imageUrl) : getEvidenceImageUrl(verBId),
-        ]);
+    try {
+      const data = await compareVersionsDetailed(verAId, verBId);
+      // The API normally returns the image URL. If a signed URL could not be
+      // produced on the first comparison request, make one direct fallback
+      // request for each selected version so the artwork still appears.
+      const [fallbackA, fallbackB] = await Promise.all([
+        data.a?.imageUrl ? Promise.resolve(data.a.imageUrl) : getEvidenceImageUrl(verAId),
+        data.b?.imageUrl ? Promise.resolve(data.b.imageUrl) : getEvidenceImageUrl(verBId),
+      ]);
 
-        setComparisonImages({
-          [verAId]: fallbackA ?? null,
-          [verBId]: fallbackB ?? null,
-        });
-        setCompareData(data);
-      })
-      .catch(e => alert('Failed to load version comparison: ' + (e as Error).message))
-      .finally(() => setLoading(false));
-  }, [verAId, verBId]);
+      setComparisonImages({
+        [verAId]: fallbackA ?? null,
+        [verBId]: fallbackB ?? null,
+      });
+      setCompareData(data);
+    } catch (e) {
+      alert('Failed to load version comparison: ' + (e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectVersion = (side: 'left' | 'right', value: string) => {
+    if (side === 'left') setVerAId(value);
+    else setVerBId(value);
+    setCompareData(undefined);
+    setComparisonImages({});
+  };
 
   const a = compareData?.a;
   const b = compareData?.b;
-  const groupName = groups.find(g => g.productGroup === productGroup)?.name ?? '';
   const aLabel = a?.scan.products?.version_label ?? 'V1';
   const bLabel = b?.scan.products?.version_label ?? 'V2';
 
@@ -1467,32 +1598,53 @@ function VersionComparison() {
       </div>
 
       <section className="version-comparison-selector panel">
-        <div className="version-comparison-selector-grid">
-          <label>Product
-            <select value={productGroup} onChange={e => setProductGroup(e.target.value)}>
-              <option value="">Select a product</option>
-              {groups.map(g => <option key={g.productGroup} value={g.productGroup}>{g.name}</option>)}
-            </select>
-          </label>
-          <label>Earlier version
-            <select value={verAId} onChange={e => setVerAId(e.target.value)}>
-              <option value="">Select version</option>
-              {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel}</option>)}
-            </select>
-          </label>
-          <label>Later version
-            <select value={verBId} onChange={e => setVerBId(e.target.value)}>
-              <option value="">Select version</option>
-              {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel}</option>)}
-            </select>
-          </label>
-        </div>
+        <label className="version-comparison-product-selector">Select Product
+          <select value={productGroup} onChange={e => setProductGroup(e.target.value)}>
+            <option value="">Select a product</option>
+            {groups.map(g => <option key={g.productGroup} value={g.productGroup}>{g.name}</option>)}
+          </select>
+        </label>
       </section>
 
-      {loading ? (
+      {!productGroup ? null : loading ? (
         <section className="version-comparison-empty panel"><p>Loading comparison...</p></section>
-      ) : a && b ? (
+      ) : (
         <>
+          <section className="version-summary-strip">
+            {versions.map(version => (
+              <article className="version-summary-tile" key={version.productId}>
+                <span className="eyebrow">{version.versionLabel}</span>
+                <strong>{version.score ?? '—'}<small>/100</small></strong>
+                <span>{version.findings === null ? 'Not checked' : `${version.findings} finding${version.findings === 1 ? '' : 's'}`}</span>
+                <time>{version.date ?? 'Not checked'}</time>
+              </article>
+            ))}
+          </section>
+
+          <section className="version-pair-selector">
+            <label>Left Version
+              <select value={verAId} onChange={e => selectVersion('left', e.target.value)}>
+                <option value="">Select version</option>
+                {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel} — {v.score ?? '—'}/100</option>)}
+              </select>
+            </label>
+            <label>Right Version
+              <select value={verBId} onChange={e => selectVersion('right', e.target.value)}>
+                <option value="">Select version</option>
+                {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel} — {v.score ?? '—'}/100</option>)}
+              </select>
+            </label>
+          </section>
+          <button
+            className="btn primary version-compare-button"
+            onClick={runComparison}
+            disabled={!verAId || !verBId || verAId === verBId || loading}
+          >
+            <ArrowLeftRight size={17} /> Compare {versions.find(v => v.productId === verAId)?.versionLabel ?? '—'} ↔ {versions.find(v => v.productId === verBId)?.versionLabel ?? '—'}
+          </button>
+
+          {a && b && (
+            <>
           <div className="version-comparison-hero">
             <div className="version-summary-card">
               <span className="eyebrow">{aLabel}</span>
@@ -1632,9 +1784,9 @@ function VersionComparison() {
             <button className="btn outline" onClick={() => viewReport(a.scan.id)}>Open {aLabel}</button>
             <button className="btn primary" onClick={() => viewReport(b.scan.id)}>Open {bLabel}</button>
           </div>
+            </>
+          )}
         </>
-      ) : (
-        <section className="panel"><p style={{ padding: '20px' }}>Select a product with at least two checked versions to compare.</p></section>
       )}
     </>
   );
@@ -1933,14 +2085,26 @@ function SellerBulkScan() {
   );
 }
 
-function SellerDashboard({ onNewScan }: { onNewScan: () => void }) {
+function SellerDashboard() {
   const [stats, setStats] = useState({ totalScans: 0, compliant: 0, nonCompliant: 0, review: 0, pendingComplaints: 0, confirmedViolations: 0 });
   const [recentScans, setRecentScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
   const [loading, setLoading] = useState(true);
 
   React.useEffect(() => {
-    Promise.all([getDashboardStats(), listRealScans()])
-      .then(([s, scans]) => { setStats(s); setRecentScans(scans); })
+    Promise.all([getDashboardStats(), listRealScans(), listSellerListings()])
+      .then(([s, scans, listings]) => {
+        const validProductNames = new Set(listings.map(listing => listing.productName.trim().toLowerCase()));
+        const validScans = scans.filter(scan => validProductNames.has(scan.productName.trim().toLowerCase()));
+        const validStats = {
+          ...s,
+          totalScans: validScans.length,
+          compliant: validScans.filter(scan => scan.status === 'COMPLIANT').length,
+          nonCompliant: validScans.filter(scan => scan.status === 'NON_COMPLIANT').length,
+          review: validScans.filter(scan => scan.status !== 'COMPLIANT' && scan.status !== 'NON_COMPLIANT').length
+        };
+        setStats(validStats);
+        setRecentScans(validScans);
+      })
       .catch(e => alert('Failed to load dashboard: ' + (e as Error).message))
       .finally(() => setLoading(false));
   }, []);
@@ -1951,9 +2115,8 @@ function SellerDashboard({ onNewScan }: { onNewScan: () => void }) {
         <div>
           <span className="eyebrow">E-COMMERCE SELLER DESK</span>
           <h1>Marketplace Listing Compliance</h1>
-          <p>Scan catalogue images to ensure all PDP declarations are visible before listing.</p>
+          <p>Review saved listings and compare online declarations with actual package artwork.</p>
         </div>
-        <button className="btn primary" onClick={onNewScan}><Camera size={16} /> Scan Listing Label</button>
       </div>
 
       <div className="stats">
@@ -1964,7 +2127,7 @@ function SellerDashboard({ onNewScan }: { onNewScan: () => void }) {
       </div>
 
       <section className="panel">
-        <h2>Catalogue Listing Checks</h2>
+        <h2>Recent Listing Activity</h2>
         {loading ? (
           <p>Loading...</p>
         ) : recentScans.length === 0 ? (
@@ -2075,10 +2238,21 @@ function consumerStatusLabel(c: Complaint): { label: string; cls: string } {
   return { label: 'Pending', cls: 'warn' };
 }
 
-function ConsumerGrievanceRow({ c }: { c: Complaint }) {
+function ConsumerGrievanceRow({ c, onDeleted }: { c: Complaint; onDeleted: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const { label, cls } = consumerStatusLabel(c);
   const hasNote = c.status === 'RESOLVED' && !!c.officerRemarks;
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const removeComplaint = async () => {
+    if (!c.dbId) return;
+    setDeleting(true);
+    try { await deleteComplaint(c.dbId); } catch (error) { console.error('Failed to delete complaint:', error); }
+    setDeleteOpen(false);
+    setDeleting(false);
+    onDeleted();
+  };
 
   return (
     <>
@@ -2088,10 +2262,15 @@ function ConsumerGrievanceRow({ c }: { c: Complaint }) {
         <td>{c.issueType}</td>
         <td className="num">{c.date}</td>
         <td><span className={'badge ' + cls}>{label}</span></td>
+        <td>
+          <button className="linkbtn danger" onClick={event => { event.stopPropagation(); setDeleteOpen(true); }} disabled={deleting}>
+            <Trash2 size={14} /> Delete
+          </button>
+        </td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={5} style={{ padding: 0 }}>
+          <td colSpan={6} style={{ padding: 0 }}>
             <div style={{ padding: '18px 20px', background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-light)' }}>
               <p style={{ margin: '0 0 10px', fontSize: '13px' }}><b>Your description:</b> {c.description}</p>
               {c.status === 'SUBMITTED' && (
@@ -2116,6 +2295,21 @@ function ConsumerGrievanceRow({ c }: { c: Complaint }) {
           </td>
         </tr>
       )}
+      {deleteOpen && (
+        <div className="manufacturer-delete-backdrop" role="presentation">
+          <section className="manufacturer-delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-complaint-title">
+            <span className="eyebrow">PERMANENT ACTION</span>
+            <h2 id="delete-complaint-title">Delete Complaint?</h2>
+            <p>This complaint will be permanently removed from your grievance record.</p>
+            <div className="manufacturer-delete-actions">
+              <button className="btn outline" onClick={() => setDeleteOpen(false)} disabled={deleting}>Cancel</button>
+              <button className="btn manufacturer-delete-confirm" onClick={removeComplaint} disabled={deleting}>
+                {deleting ? 'Deleting...' : 'Delete Complaint'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }
@@ -2136,7 +2330,7 @@ function ConsumerGrievancesPage({ onGlobalComplaintAdd }: { onGlobalComplaintAdd
 
   const loadComplaints = () => {
     setLoading(true);
-    listComplaintsReal()
+    listComplaintsReal('CONSUMER')
       .then(setMyComplaints)
       .catch(e => alert('Failed to load grievances: ' + (e as Error).message))
       .finally(() => setLoading(false));
@@ -2174,10 +2368,10 @@ function ConsumerGrievancesPage({ onGlobalComplaintAdd }: { onGlobalComplaintAdd
         ) : (
           <table>
             <thead>
-              <tr><th>Complaint ID</th><th>Product</th><th>Issue</th><th>Date</th><th>Status</th></tr>
+              <tr><th>Complaint ID</th><th>Product</th><th>Issue</th><th>Date</th><th>Status</th><th>Action</th></tr>
             </thead>
             <tbody>
-              {myComplaints.map(c => <ConsumerGrievanceRow key={c.id} c={c} />)}
+              {myComplaints.map(c => <ConsumerGrievanceRow key={c.id} c={c} onDeleted={() => setMyComplaints(current => current.filter(item => item.dbId !== c.dbId))} />)}
             </tbody>
           </table>
         )}
@@ -2327,10 +2521,19 @@ function HistoryPage({ role }: { role: Role }) {
   const [realScans, setRealScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [loadingReportId, setLoadingReportId] = useState<string>();
+  const [deleteTarget, setDeleteTarget] = useState<Awaited<ReturnType<typeof listRealScans>>[number]>();
+  const [deletingInspection, setDeletingInspection] = useState(false);
 
   React.useEffect(() => {
-    listRealScans()
-      .then(setRealScans)
+    Promise.all([listRealScans(), role === 'seller' ? listSellerListings() : Promise.resolve([])])
+      .then(([scans, listings]) => {
+        if (role !== 'seller') {
+          setRealScans(scans);
+          return;
+        }
+        const validProductNames = new Set(listings.map(listing => listing.productName.trim().toLowerCase()));
+        setRealScans(scans.filter(scan => validProductNames.has(scan.productName.trim().toLowerCase())));
+      })
       .catch(e => alert('Failed to load history: ' + (e as Error).message))
       .finally(() => setLoadingHistory(false));
   }, []);
@@ -2346,6 +2549,17 @@ function HistoryPage({ role }: { role: Role }) {
     } finally {
       setLoadingReportId(undefined);
     }
+  };
+
+  const confirmDeleteInspection = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeletingInspection(true);
+    markInspectionDeleted(target.scanId);
+    setRealScans(current => current.filter(scan => scan.scanId !== target.scanId));
+    setDeleteTarget(undefined);
+    setDeletingInspection(false);
+    void deleteInspection(target.scanId).catch(error => console.error('Failed to delete inspection:', error));
   };
 
   const filtered = realScans.filter(r => r.productName.toLowerCase().includes(q.toLowerCase()));
@@ -2383,9 +2597,16 @@ function HistoryPage({ role }: { role: Role }) {
                   <td><span className={'badge ' + cls(r.status as Status)}>{r.status.replace(/_/g, ' ')}</span></td>
                   <td className="num">{r.violationCount}</td>
                   <td>
-                    <button className="linkbtn" onClick={() => openRealReport(r.scanId)} disabled={loadingReportId === r.scanId}>
-                      {loadingReportId === r.scanId ? 'Loading...' : 'View Report'}
-                    </button>
+                    <div className="manufacturer-product-actions">
+                      <button className="linkbtn" onClick={() => openRealReport(r.scanId)} disabled={loadingReportId === r.scanId}>
+                        {loadingReportId === r.scanId ? 'Loading...' : 'View Report'}
+                      </button>
+                      {role === 'officer' && (
+                        <button className="linkbtn danger" onClick={() => setDeleteTarget(r)}>
+                          <Trash2 size={14} /> Delete
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -2393,6 +2614,29 @@ function HistoryPage({ role }: { role: Role }) {
           </table>
         )}
       </section>
+      {!loadingHistory && <span className="manufacturer-history-count">{filtered.length} inspection{filtered.length === 1 ? '' : 's'} shown</span>}
+      {role === 'officer' && deleteTarget && (
+        <div className="manufacturer-delete-backdrop" role="presentation">
+          <section className="manufacturer-delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-inspection-title">
+            <span className="eyebrow">PERMANENT ACTION</span>
+            <h2 id="delete-inspection-title">Delete Inspection?</h2>
+            <p><strong>{deleteTarget.id}</strong> and its saved inspection records will be permanently removed.</p>
+            <h3>This includes:</h3>
+            <ul>
+              <li>Inspection record</li>
+              <li>Compliance findings</li>
+              <li>Inspection evidence/references</li>
+              <li>Related saved inspection data</li>
+            </ul>
+            <div className="manufacturer-delete-actions">
+              <button className="btn outline" onClick={() => setDeleteTarget(undefined)} disabled={deletingInspection}>Cancel</button>
+              <button className="btn manufacturer-delete-confirm" onClick={confirmDeleteInspection} disabled={deletingInspection}>
+                {deletingInspection ? 'Deleting...' : 'Delete Inspection'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }
@@ -2801,14 +3045,13 @@ function AppShell() {
       { label: 'Correction Recommendations', path: 'recommendations', icon: <AlertTriangle size={17} /> },
       { label: 'Version Comparison', path: 'version-comparison', icon: <ArrowLeftRight size={17} /> },
       { label: 'Label Generator', path: 'label-generator', icon: <Sparkles size={17} /> },
-      { label: 'Version History', path: 'history', icon: <HistoryIcon size={17} /> },
+      { label: 'Compliance History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
     seller: [
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
       { label: 'Listings', path: 'listings', icon: <ClipboardCheck size={17} /> },
       { label: 'Listing Audit', path: 'listing-audit', icon: <ClipboardCheck size={17} /> },
       { label: 'Package ↔ Listing Comparison', path: 'listing-comparison', icon: <ArrowLeftRight size={17} /> },
-      { label: 'Listing Check', path: 'scan', icon: <Camera size={17} /> },
       { label: 'Bulk Listing Audit', path: 'bulk-check', icon: <ClipboardCheck size={17} /> },
       { label: 'Listing History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
@@ -2925,43 +3168,10 @@ function AppShell() {
 
           {user.role === 'seller' && (
             <>
-              <Route index element={<SellerDashboard onNewScan={() => { setScanResult(undefined); nav('/app/scan'); }} />} />
+              <Route index element={<SellerDashboard />} />
               <Route path="listings" element={<SellerListingsPage />} />
               <Route path="listing-audit" element={<SellerListingAuditPage />} />
               <Route path="listing-comparison" element={<SellerListingComparisonPage />} />
-              <Route path="scan" element={scanResult ? (
-                <div className="result">
-                  <div className="result-head">
-                    <div className="product-art">{scanResult.product.image}</div>
-                    <div>
-                      <span className="eyebrow">CATALOGUE LISTING AUDIT</span>
-                      <h1>{scanResult.product.name}</h1>
-                      <p>Listing Status: {scanResult.status}</p>
-                    </div>
-                    <Seal score={scanResult.score} statusLabel={scanResult.status} tone={cls(scanResult.status) as 'good' | 'warn' | 'bad'} />
-                  </div>
-                  <section className="panel" style={{ margin: '18px 0' }}>
-                    <h2>Marketplace PDP Checklist</h2>
-                    <div className="fields">
-                      {Object.entries(scanResult.product.fields).map(([k, val]) => (
-                        <div key={k}><span>{k}</span><strong>{val}</strong></div>
-                      ))}
-                    </div>
-                  </section>
-                  <button className="btn primary" onClick={() => setScanResult(undefined)}>Check Next Catalogue Item</button>
-                </div>
-              ) : (
-                <>
-                  <div className="page-title">
-                    <div>
-                      <span className="eyebrow">SELLER CATALOGUE CHECK</span>
-                      <h1>Scan Listing Image</h1>
-                      <p>Check if online product photos have all mandatory packaging declarations.</p>
-                    </div>
-                  </div>
-                  <Scanner done={setScanResult} role="seller" />
-                </>
-              )} />
               <Route path="history" element={<HistoryPage role="seller" />} />
               <Route path="bulk-check" element={<SellerBulkListingAuditPage />} />
             </>

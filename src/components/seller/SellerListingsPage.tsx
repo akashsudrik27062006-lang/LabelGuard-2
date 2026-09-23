@@ -4,6 +4,7 @@ import {
   createSellerListing,
   deleteSellerListing,
   listSellerListings,
+  markSellerListingDeleted,
   updateSellerListing,
 } from '../../lib/api';
 import type { SellerListing, SellerListingInput } from './sellerTypes';
@@ -53,12 +54,14 @@ export default function SellerListingsPage() {
   const [selected, setSelected] = useState<SellerListing | null>(null);
   const [form, setForm] = useState<SellerListingInput>(emptyListing);
   const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<SellerListing | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadListings = () => {
     setLoading(true);
     listSellerListings()
       .then(setListings)
-      .catch(error => alert('Failed to load listings: ' + (error as Error).message))
+      .catch(() => setListings([]))
       .finally(() => setLoading(false));
   };
 
@@ -117,23 +120,55 @@ export default function SellerListingsPage() {
       setSelected(saved);
       setMode('detail');
     } catch (error) {
-      alert('Failed to save listing: ' + (error as Error).message);
+      console.error('Failed to save listing:', error);
     } finally {
       setSaving(false);
     }
   };
 
-  const remove = async (listing: SellerListing) => {
-    if (!window.confirm(`Delete listing "${listing.listingTitle}"?`)) return;
+  const remove = async () => {
+    if (!deleteTarget) return;
+    const listing = deleteTarget;
+    setDeleting(true);
+    markSellerListingDeleted(listing.id);
+    setListings(current => current.filter(item => item.id !== listing.id));
+    setSelected(current => current?.id === listing.id ? null : current);
+    setDeleteTarget(null);
+    setMode('list');
     try {
       await deleteSellerListing(listing.id);
-      setListings(current => current.filter(item => item.id !== listing.id));
-      setSelected(null);
-      setMode('list');
     } catch (error) {
-      alert('Failed to delete listing: ' + (error as Error).message);
+      console.error('Failed to delete listing:', error);
+    } finally {
+      setDeleting(false);
     }
   };
+
+  const deleteModal = deleteTarget && (
+    <div className="manufacturer-delete-backdrop" role="presentation">
+      <section className="manufacturer-delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-listing-title">
+        <span className="eyebrow">PERMANENT ACTION</span>
+        <h2 id="delete-listing-title">Delete Listing?</h2>
+        <p><strong>{deleteTarget.listingTitle}</strong></p>
+        <p>This listing and all of its saved Seller records will be permanently removed.</p>
+        <h3>This includes:</h3>
+        <ul>
+          <li>Listing information</li>
+          <li>Saved listing audits</li>
+          <li>Package ↔ Listing comparison records</li>
+          <li>Bulk audit references</li>
+          <li>Listing history</li>
+          <li>Stored listing evidence images, if applicable</li>
+        </ul>
+        <div className="manufacturer-delete-actions">
+          <button className="btn outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</button>
+          <button className="btn manufacturer-delete-confirm" onClick={remove} disabled={deleting}>
+            {deleting ? 'Deleting...' : 'Delete Listing'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 
   if (mode === 'form') {
     return (
@@ -203,8 +238,9 @@ export default function SellerListingsPage() {
           </div>
           {selected.description && <><h2>Description</h2><p>{selected.description}</p></>}
           {selected.listingUrl && <a className="linkbtn" href={selected.listingUrl} target="_blank" rel="noopener noreferrer">Open marketplace listing</a>}
-          <button className="linkbtn listing-delete" onClick={() => remove(selected)}><Trash2 size={14} /> Delete listing</button>
+          <button className="linkbtn listing-delete" onClick={() => setDeleteTarget(selected)}><Trash2 size={14} /> Delete listing</button>
         </section>
+        {deleteModal}
       </>
     );
   }
@@ -239,7 +275,7 @@ export default function SellerListingsPage() {
                   <td className="listing-actions">
                     <button className="linkbtn" onClick={() => { setSelected(listing); setMode('detail'); }}><Eye size={14} /> View</button>
                     <button className="linkbtn" onClick={() => openEdit(listing)}><Edit3 size={14} /> Edit</button>
-                    <button className="linkbtn danger-link" onClick={() => remove(listing)}><Trash2 size={14} /> Delete</button>
+                    <button className="linkbtn danger-link" onClick={() => setDeleteTarget(listing)}><Trash2 size={14} /> Delete</button>
                   </td>
                 </tr>
               ))}
@@ -247,6 +283,7 @@ export default function SellerListingsPage() {
           </table>
         )}
       </section>
+      {deleteModal}
     </>
   );
 }
