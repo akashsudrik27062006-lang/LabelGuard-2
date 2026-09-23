@@ -8,6 +8,7 @@ import {
   listVersionsForGroup,
   mapToUiResult
 } from '../../lib/api';
+import Pagination from '../Pagination';
 
 type ProductGroup = Awaited<ReturnType<typeof listProductGroups>>[number];
 type ProductVersion = Awaited<ReturnType<typeof listVersionsForGroup>>[number];
@@ -31,6 +32,8 @@ export default function ManufacturerVersionHistoryPage({ setScanResult }: {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingReportId, setLoadingReportId] = useState<string>();
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
 
   useEffect(() => {
     Promise.all([listProductGroups(), listRealScans()])
@@ -59,6 +62,7 @@ export default function ManufacturerVersionHistoryPage({ setScanResult }: {
       [row.productName, row.versionLabel, row.date ?? ''].some(value => value.toLowerCase().includes(normalizedQuery))
     );
   }, [query, rows]);
+  const pagedRows = visibleRows.slice((page - 1) * pageSize, page * pageSize);
 
   const openReport = async (scanId: string | null) => {
     if (!scanId) return;
@@ -87,7 +91,7 @@ export default function ManufacturerVersionHistoryPage({ setScanResult }: {
           aria-label="Search product or artwork version"
           placeholder="Search product or artwork version..."
           value={query}
-          onChange={event => setQuery(event.target.value)}
+          onChange={event => { setQuery(event.target.value); setPage(1); }}
         />
       </section>
 
@@ -115,7 +119,7 @@ export default function ManufacturerVersionHistoryPage({ setScanResult }: {
                 </tr>
               </thead>
               <tbody>
-                {visibleRows.map(row => (
+                {pagedRows.map(row => (
                   <tr key={row.productId}>
                     <td><strong>{row.productName}</strong></td>
                     <td><span className="manufacturer-history-version">{row.versionLabel}</span></td>
@@ -141,6 +145,9 @@ export default function ManufacturerVersionHistoryPage({ setScanResult }: {
               </tbody>
             </table>
           </div>
+        )}
+        {!loading && visibleRows.length > 0 && (
+          <Pagination currentPage={page} totalItems={visibleRows.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), Math.ceil(visibleRows.length / pageSize)))} />
         )}
       </section>
       <span className="manufacturer-history-count">{visibleRows.length} of {rows.length} artwork version{rows.length === 1 ? '' : 's'}</span>

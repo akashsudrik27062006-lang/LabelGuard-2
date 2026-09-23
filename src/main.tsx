@@ -16,6 +16,7 @@ import SellerListingAuditPage from './components/seller/SellerListingAuditPage';
 import SellerListingComparisonPage from './components/seller/SellerListingComparisonPage';
 import SellerBulkListingAuditPage from './components/seller/SellerBulkListingAuditPage';
 import ManufacturerVersionHistoryPage from './components/manufacturer/ManufacturerVersionHistoryPage';
+import Pagination from './components/Pagination';
 type DbProfile = {
   id: string;
   full_name: string;
@@ -1022,6 +1023,15 @@ function ComplaintRow({ c, onRefresh }: { c: Complaint; onRefresh: () => void })
 }
 
 function OfficerComplaintsView({ complaints, loading, onRefresh }: { complaints: Complaint[]; loading: boolean; onRefresh: () => void }) {
+  const pageSize = 8;
+  const [page, setPage] = useState(1);
+  const pageCount = Math.ceil(complaints.length / pageSize);
+  const visibleComplaints = complaints.slice((page - 1) * pageSize, page * pageSize);
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [complaints]);
+
   return (
     <>
       <div className="page-title">
@@ -1042,9 +1052,12 @@ function OfficerComplaintsView({ complaints, loading, onRefresh }: { complaints:
               <tr><th>Complaint ID</th><th>Product</th><th>Reported Issue</th><th>Date</th><th>Status</th><th>Action</th></tr>
             </thead>
             <tbody>
-              {complaints.map(c => <ComplaintRow key={c.id} c={c} onRefresh={onRefresh} />)}
+              {visibleComplaints.map(c => <ComplaintRow key={c.id} c={c} onRefresh={onRefresh} />)}
             </tbody>
           </table>
+        )}
+        {!loading && complaints.length > 0 && (
+          <Pagination currentPage={page} totalItems={complaints.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), pageCount))} />
         )}
       </section>
     </>
@@ -1235,12 +1248,16 @@ function ProductsArtwork({ setScanResult }: {
   const [versionsByGroup, setVersionsByGroup] = useState<Record<string, Awaited<ReturnType<typeof listVersionsForGroup>>>>({});
   const [deleteTarget, setDeleteTarget] = useState<Awaited<ReturnType<typeof listProductGroups>>[number]>();
   const [deletingGroup, setDeletingGroup] = useState<string>();
+  const [page, setPage] = useState(1);
+  const pageSize = 6;
 
   const load = () => {
     setLoading(true);
     listProductGroups().then(setGroups).catch(e => alert('Failed to load products: ' + (e as Error).message)).finally(() => setLoading(false));
   };
   React.useEffect(() => { load(); }, []);
+
+  const visibleGroups = groups.slice((page - 1) * pageSize, page * pageSize);
 
   const toggleExpand = async (productGroup: string) => {
     if (expanded === productGroup) { setExpanded(undefined); return; }
@@ -1295,7 +1312,7 @@ function ProductsArtwork({ setScanResult }: {
               <tr><th>Product</th><th>Category</th><th>Latest Version</th><th>Versions</th><th>Score</th><th>Status</th><th>Issues</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {groups.map(g => (
+              {visibleGroups.map(g => (
                 <React.Fragment key={g.productGroup}>
                   <tr>
                     <td><strong>{g.name}</strong></td>
@@ -1345,6 +1362,9 @@ function ProductsArtwork({ setScanResult }: {
             </tbody>
           </table>
         )}
+        {!loading && groups.length > 0 && (
+          <Pagination currentPage={page} totalItems={groups.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), Math.ceil(groups.length / pageSize)))} />
+        )}
       </section>
       {deleteTarget && (
         <div className="manufacturer-delete-backdrop" role="presentation">
@@ -1383,6 +1403,8 @@ function Recommendations({ setScanResult }: {
   const [busyId, setBusyId] = useState<string>();
   const [selectedProduct, setSelectedProduct] = useState('');
   const [selectedArtwork, setSelectedArtwork] = useState('');
+  const [page, setPage] = useState(1);
+  const pageSize = 6;
 
   const load = () => {
     setLoading(true);
@@ -1415,6 +1437,7 @@ function Recommendations({ setScanResult }: {
     (!selectedProduct || row.productGroup === selectedProduct) &&
     (!selectedArtwork || `${row.productGroup}::${row.versionLabel}` === selectedArtwork)
   );
+  const visibleRows = filteredRows.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <>
@@ -1434,6 +1457,7 @@ function Recommendations({ setScanResult }: {
             onChange={event => {
               setSelectedProduct(event.target.value);
               setSelectedArtwork('');
+              setPage(1);
             }}
           >
             <option value="">All products</option>
@@ -1442,7 +1466,7 @@ function Recommendations({ setScanResult }: {
         </label>
         <label>
           <span>Artwork version</span>
-          <select value={selectedArtwork} onChange={event => setSelectedArtwork(event.target.value)}>
+          <select value={selectedArtwork} onChange={event => { setSelectedArtwork(event.target.value); setPage(1); }}>
             <option value="">All Revised Artworks</option>
             {artworks.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select>
@@ -1459,7 +1483,7 @@ function Recommendations({ setScanResult }: {
               : 'No recommendations found for the selected filters.'}
           </p>
         ) : (
-          filteredRows.map(row => (
+          visibleRows.map(row => (
             <article key={row.violationId} className="panel" style={{ margin: '14px 0', padding: '18px', background: 'var(--bg-subtle)', borderLeft: `4px solid var(--status-${row.severity === 'HIGH' ? 'bad' : 'warn'})` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
@@ -1490,6 +1514,9 @@ function Recommendations({ setScanResult }: {
               </div>
             </article>
           ))
+        )}
+        {!loading && filteredRows.length > 0 && (
+          <Pagination currentPage={page} totalItems={filteredRows.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), Math.ceil(filteredRows.length / pageSize)))} />
         )}
       </section>
     </>
@@ -2341,11 +2368,14 @@ function ConsumerGrievancesPage({ onGlobalComplaintAdd }: { onGlobalComplaintAdd
   const [view, setView] = useState<'list' | 'form'>(prefill ? 'form' : 'list');
   const [myComplaints, setMyComplaints] = useState<Complaint[]>([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
+  const visibleComplaints = myComplaints.slice((page - 1) * pageSize, page * pageSize);
 
   const loadComplaints = () => {
     setLoading(true);
     listComplaintsReal('CONSUMER')
-      .then(setMyComplaints)
+      .then(complaints => { setMyComplaints(complaints); setPage(1); })
       .catch(e => alert('Failed to load grievances: ' + (e as Error).message))
       .finally(() => setLoading(false));
   };
@@ -2385,9 +2415,12 @@ function ConsumerGrievancesPage({ onGlobalComplaintAdd }: { onGlobalComplaintAdd
               <tr><th>Complaint ID</th><th>Product</th><th>Issue</th><th>Date</th><th>Status</th><th>Action</th></tr>
             </thead>
             <tbody>
-              {myComplaints.map(c => <ConsumerGrievanceRow key={c.id} c={c} onDeleted={() => setMyComplaints(current => current.filter(item => item.dbId !== c.dbId))} />)}
+              {visibleComplaints.map(c => <ConsumerGrievanceRow key={c.id} c={c} onDeleted={() => { setMyComplaints(current => current.filter(item => item.dbId !== c.dbId)); setPage(1); }} />)}
             </tbody>
           </table>
+        )}
+        {!loading && myComplaints.length > 0 && (
+          <Pagination currentPage={page} totalItems={myComplaints.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), Math.ceil(myComplaints.length / pageSize)))} />
         )}
       </section>
       <div style={{ padding: '0 32px 32px' }}>
@@ -2530,6 +2563,8 @@ function ConsumerComplaintForm({ prefill, onSubmit, onCancel }: {
 
 function HistoryPage({ role }: { role: Role }) {
   const [q, setQ] = useState('');
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
   const nav = useNavigate();
 
   const [realScans, setRealScans] = useState<Awaited<ReturnType<typeof listRealScans>>>([]);
@@ -2577,6 +2612,7 @@ function HistoryPage({ role }: { role: Role }) {
   };
 
   const filtered = realScans.filter(r => r.productName.toLowerCase().includes(q.toLowerCase()));
+  const visibleRows = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <>
@@ -2589,7 +2625,7 @@ function HistoryPage({ role }: { role: Role }) {
       </div>
       <div className="filters">
         <Search size={16} />
-        <input placeholder="Search by product name..." value={q} onChange={e => setQ(e.target.value)} />
+        <input placeholder="Search by product name..." value={q} onChange={e => { setQ(e.target.value); setPage(1); }} />
       </div>
       <section className="panel">
         {loadingHistory ? (
@@ -2602,7 +2638,7 @@ function HistoryPage({ role }: { role: Role }) {
               <tr><th>Audit ID</th><th>Product</th><th>Manufacturer</th><th>Score</th><th>Status</th><th>Violations</th><th>Action</th></tr>
             </thead>
             <tbody>
-              {filtered.map(r => (
+              {visibleRows.map(r => (
                 <tr key={r.scanId}>
                   <td className="num">{r.id}</td>
                   <td>📦 {r.productName}</td>
@@ -2626,6 +2662,9 @@ function HistoryPage({ role }: { role: Role }) {
               ))}
             </tbody>
           </table>
+        )}
+        {!loadingHistory && filtered.length > 0 && (
+          <Pagination currentPage={page} totalItems={filtered.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), Math.ceil(filtered.length / pageSize)))} />
         )}
       </section>
       {!loadingHistory && <span className="manufacturer-history-count">{filtered.length} inspection{filtered.length === 1 ? '' : 's'} shown</span>}

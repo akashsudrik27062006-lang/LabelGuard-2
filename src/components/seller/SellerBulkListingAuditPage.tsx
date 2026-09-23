@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ClipboardCheck, Search, ShieldAlert } from 'lucide-react';
 import { createSellerBulkListingAudit, listSellerListings } from '../../lib/api';
 import type { SellerBulkListingAudit, SellerListing, SellerListingAuditFinding } from './sellerTypes';
+import Pagination from '../Pagination';
 
 function statusClass(status: string): string {
   return status === 'COMPLIANT' ? 'good' : status === 'NON_COMPLIANT' ? 'bad' : 'warn';
@@ -19,6 +20,8 @@ export default function SellerBulkListingAuditPage() {
   const [expandedId, setExpandedId] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
 
   useEffect(() => {
     listSellerListings()
@@ -35,6 +38,7 @@ export default function SellerBulkListingAuditPage() {
         .some(value => value.toLowerCase().includes(term))
     );
   }, [listings, query]);
+  const visibleListings = filteredListings.slice((page - 1) * pageSize, page * pageSize);
 
   const allFilteredSelected = filteredListings.length > 0 && filteredListings.every(listing => selectedIds.includes(listing.id));
 
@@ -83,7 +87,7 @@ export default function SellerBulkListingAuditPage() {
 
       <div className="filters">
         <Search size={16} />
-        <input placeholder="Search product, listing title, SKU, marketplace, or manufacturer..." value={query} onChange={event => setQuery(event.target.value)} />
+        <input placeholder="Search product, listing title, SKU, marketplace, or manufacturer..." value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} />
         <span className="bulk-selection-count">{selectedIds.length} selected</span>
       </div>
 
@@ -102,7 +106,7 @@ export default function SellerBulkListingAuditPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredListings.map(listing => (
+                {visibleListings.map(listing => (
                   <tr key={listing.id}>
                     <td><input type="checkbox" aria-label={`Select ${listing.listingTitle}`} checked={selectedIds.includes(listing.id)} onChange={() => toggleListing(listing.id)} /></td>
                     <td><strong>{listing.productName}</strong></td>
@@ -117,6 +121,9 @@ export default function SellerBulkListingAuditPage() {
               </tbody>
             </table>
           </div>
+        )}
+        {!loading && filteredListings.length > 0 && (
+          <Pagination currentPage={page} totalItems={filteredListings.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), Math.ceil(filteredListings.length / pageSize)))} />
         )}
       </section>
 

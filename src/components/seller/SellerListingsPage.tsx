@@ -8,6 +8,7 @@ import {
   updateSellerListing,
 } from '../../lib/api';
 import type { SellerListing, SellerListingInput } from './sellerTypes';
+import Pagination from '../Pagination';
 
 const emptyListing: SellerListingInput = {
   productName: '',
@@ -56,6 +57,8 @@ export default function SellerListingsPage() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SellerListing | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
 
   const loadListings = () => {
     setLoading(true);
@@ -77,6 +80,7 @@ export default function SellerListingsPage() {
         .some(value => value.toLowerCase().includes(normalized))
     );
   }, [listings, query]);
+  const visibleListings = filteredListings.slice((page - 1) * pageSize, page * pageSize);
 
   const openCreate = () => {
     setSelected(null);
@@ -257,7 +261,7 @@ export default function SellerListingsPage() {
       </div>
       <div className="filters">
         <Search size={16} />
-        <input placeholder="Search by title, product, SKU, brand, or marketplace..." value={query} onChange={event => setQuery(event.target.value)} />
+        <input placeholder="Search by title, product, SKU, brand, or marketplace..." value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} />
       </div>
       <section className="panel">
         {loading ? <p>Loading listings...</p> : filteredListings.length === 0 ? (
@@ -266,7 +270,7 @@ export default function SellerListingsPage() {
           <table>
             <thead><tr><th>Listing</th><th>SKU</th><th>Marketplace</th><th>Price</th><th>Actions</th></tr></thead>
             <tbody>
-              {filteredListings.map(listing => (
+              {visibleListings.map(listing => (
                 <tr key={listing.id}>
                   <td><strong>{listing.listingTitle}</strong><br /><span className="table-muted">{listing.productName}{listing.brand ? ` · ${listing.brand}` : ''}</span></td>
                   <td className="num">{listing.sku}</td>
@@ -281,6 +285,9 @@ export default function SellerListingsPage() {
               ))}
             </tbody>
           </table>
+        )}
+        {!loading && filteredListings.length > 0 && (
+          <Pagination currentPage={page} totalItems={filteredListings.length} pageSize={pageSize} onPageChange={nextPage => setPage(Math.min(Math.max(nextPage, 1), Math.ceil(filteredListings.length / pageSize)))} />
         )}
       </section>
       {deleteModal}
