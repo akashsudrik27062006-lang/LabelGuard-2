@@ -1,4 +1,396 @@
 import { supabase } from './supabase';
+import type { PackageComparisonStatus, SellerComparisonField, SellerListing, SellerListingAudit, SellerListingAuditFinding, SellerListingInput, SellerPackageEvidence, SellerPackageListingComparison } from '../components/seller/sellerTypes';
+
+function mapSellerListing(row: any): SellerListing {
+  return {
+    id: row.id,
+    sellerId: row.seller_id,
+    organizationId: row.organization_id ?? null,
+    productName: row.product_name ?? '',
+    brand: row.brand ?? '',
+    listingTitle: row.listing_title ?? '',
+    sku: row.sku ?? '',
+    category: row.category ?? '',
+    marketplace: row.marketplace ?? '',
+    listingUrl: row.listing_url ?? '',
+    listedMrp: row.listed_mrp == null ? null : Number(row.listed_mrp),
+    sellingPrice: row.selling_price == null ? null : Number(row.selling_price),
+    netQuantity: row.net_quantity ?? '',
+    manufacturerPackerImporter: row.manufacturer_packer_importer ?? '',
+    countryOfOrigin: row.country_of_origin ?? '',
+    manufacturingPackingDate: row.manufacturing_packing_date ?? '',
+    bestBeforeUseBy: row.best_before_use_by ?? '',
+    consumerCareDetails: row.consumer_care_details ?? '',
+    description: row.description ?? '',
+    status: row.status ?? 'ACTIVE',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function sellerListingPayload(input: SellerListingInput, sellerId?: string, organizationId?: string | null) {
+  return {
+    ...(sellerId ? { seller_id: sellerId } : {}),
+    ...(sellerId ? { organization_id: organizationId } : {}),
+    product_name: input.productName.trim(),
+    brand: input.brand.trim() || null,
+    listing_title: input.listingTitle.trim(),
+    sku: input.sku.trim(),
+    category: input.category.trim(),
+    marketplace: input.marketplace.trim(),
+    listing_url: input.listingUrl.trim() || null,
+    listed_mrp: input.listedMrp,
+    selling_price: input.sellingPrice,
+    net_quantity: input.netQuantity.trim() || null,
+    manufacturer_packer_importer: input.manufacturerPackerImporter.trim() || null,
+    country_of_origin: input.countryOfOrigin.trim() || null,
+    manufacturing_packing_date: input.manufacturingPackingDate.trim() || null,
+    best_before_use_by: input.bestBeforeUseBy.trim() || null,
+    consumer_care_details: input.consumerCareDetails.trim() || null,
+    description: input.description.trim() || null,
+  };
+}
+
+async function getSellerIdentity() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { data: profile, error } = await supabase
+    .from('profiles')
+    .select('organization_id')
+    .eq('id', user.id)
+    .single();
+  if (error) throw error;
+
+  return { userId: user.id, organizationId: profile?.organization_id ?? null };
+}
+
+export async function listSellerListings(): Promise<SellerListing[]> {
+  const { data, error } = await supabase
+    .from('seller_listings')
+    .select('*')
+    .order('updated_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map(mapSellerListing);
+}
+
+export async function createSellerListing(input: SellerListingInput): Promise<SellerListing> {
+  const identity = await getSellerIdentity();
+  const { data, error } = await supabase
+    .from('seller_listings')
+    .insert(sellerListingPayload(input, identity.userId, identity.organizationId))
+    .select('*')
+    .single();
+  if (error) throw error;
+  return mapSellerListing(data);
+}
+
+export async function updateSellerListing(id: string, input: SellerListingInput): Promise<SellerListing> {
+  const { data, error } = await supabase
+    .from('seller_listings')
+    .update(sellerListingPayload(input))
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error) throw error;
+  return mapSellerListing(data);
+}
+
+export async function deleteSellerListing(id: string): Promise<void> {
+  const { error } = await supabase.from('seller_listings').delete().eq('id', id);
+  if (error) throw error;
+}
+
+function auditFinding(
+  field: string,
+  value: string | null,
+  status: SellerListingAuditFinding['status'],
+  finding: string
+): SellerListingAuditFinding {
+  return { field, value, status, finding };
+}
+
+export function runSellerListingAudit(listing: SellerListing): Omit<SellerListingAudit, 'id' | 'listingId' | 'sellerId' | 'auditedAt'> {
+  const findings: SellerListingAuditFinding[] = [];
+  const present = (field: string, value: string, label: string) => {
+    findings.push(value.trim()
+      ? auditFinding(field, value, 'PRESENT', `${label} is provided in the saved listing.`)
+      : auditFinding(field, null, 'MISSING', `${label} is not provided.`));
+  };
+
+  present('Product / Common Name', listing.productName, 'Product / common name');
+  present('Net Quantity', listing.netQuantity, 'Net quantity');
+  present('Listed MRP / Maximum Retail Price', listing.listedMrp == null ? '' : String(listing.listedMrp), 'Listed MRP');
+  present('Manufacturer / Packer / Importer', listing.manufacturerPackerImporter, 'Manufacturer / packer / importer');
+  present('Consumer Care Details', listing.consumerCareDetails, 'Consumer care details');
+
+  const quantityLooksValid = /\d+(?:\.\d+)?\s*(g|kg|mg|ml|l|litre|liter|piece|pcs|pc|no\.?)\b/i.test(listing.netQuantity);
+  if (listing.netQuantity.trim() && !quantityLooksValid) {
+    const finding = findings.find(item => item.field === 'Net Quantity');
+    if (finding) {
+      finding.status = 'REVIEW_REQUIRED';
+      finding.finding = 'Net quantity is present but its unit format needs officer verification.';
+    }
+  }
+
+  if (listing.listedMrp != null && listing.sellingPrice != null && listing.sellingPrice > listing.listedMrp) {
+    findings.push(auditFinding(
+      'Selling Price vs Listed MRP',
+      `₹${listing.sellingPrice.toFixed(2)} vs ₹${listing.listedMrp.toFixed(2)}`,
+      'REVIEW_REQUIRED',
+      'Selling price is higher than the listed MRP; verify the marketplace information.'
+    ));
+  }
+
+  const conditional = (field: string, value: string, label: string) => findings.push(
+    value.trim()
+      ? auditFinding(field, value, 'PRESENT', `${label} is provided in the saved listing.`)
+      : auditFinding(field, null, 'REVIEW_REQUIRED', `${label} may be applicable; confirm it for this product and marketplace.`)
+  );
+  conditional('Country of Origin', listing.countryOfOrigin, 'Country of origin');
+  conditional('Manufacturing / Packing Date', listing.manufacturingPackingDate, 'Manufacturing / packing date');
+  conditional('Best Before / Use By', listing.bestBeforeUseBy, 'Best before / use by');
+  conditional('Unit Sale Price', '', 'Unit sale price');
+
+  const missingCount = findings.filter(finding => finding.status === 'MISSING').length;
+  const reviewCount = findings.filter(finding => finding.status === 'REVIEW_REQUIRED').length;
+  const score = Math.max(0, 100 - missingCount * 15 - reviewCount * 7);
+  const status = missingCount > 0 ? 'NON_COMPLIANT' : reviewCount > 0 ? 'REVIEW_REQUIRED' : 'COMPLIANT';
+  return {
+    score,
+    status,
+    checkedDeclarations: Object.fromEntries(findings.map(finding => [finding.field, finding.value])),
+    findings
+  };
+}
+
+export async function createSellerListingAudit(
+  listingId: string,
+  result: Omit<SellerListingAudit, 'id' | 'listingId' | 'sellerId' | 'auditedAt'>
+): Promise<SellerListingAudit> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { data, error } = await supabase
+    .from('seller_listing_audits')
+    .insert({
+      listing_id: listingId,
+      seller_id: user.id,
+      score: result.score,
+      status: result.status,
+      checked_declarations: result.checkedDeclarations,
+      findings: result.findings,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  return {
+    id: data.id,
+    listingId: data.listing_id,
+    sellerId: data.seller_id,
+    auditedAt: data.audited_at,
+    score: data.score,
+    status: data.status,
+    checkedDeclarations: data.checked_declarations ?? {},
+    findings: data.findings ?? [],
+  };
+}
+
+export async function listSellerListingAudits(listingId?: string): Promise<SellerListingAudit[]> {
+  let query = supabase
+    .from('seller_listing_audits')
+    .select('*')
+    .order('audited_at', { ascending: false });
+  if (listingId) query = query.eq('listing_id', listingId);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    listingId: row.listing_id,
+    sellerId: row.seller_id,
+    auditedAt: row.audited_at,
+    score: row.score,
+    status: row.status,
+    checkedDeclarations: row.checked_declarations ?? {},
+    findings: row.findings ?? [],
+  }));
+}
+
+function normalizedComparisonValue(value: string): string {
+  return value.toLowerCase()
+    .replace(/[₹$]/g, '')
+    .replace(/\brs\.?\s*/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function quantityInBaseUnits(value: string): number | null {
+  const match = value.match(/(\d+(?:\.\d+)?)\s*(kg|g|mg|l|litre|liter|ml)\b/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  if (unit === 'kg') return amount * 1000;
+  if (unit === 'mg') return amount / 1000;
+  if (unit === 'l' || unit === 'litre' || unit === 'liter') return amount * 1000;
+  if (unit === 'ml') return amount;
+  return amount;
+}
+
+function valuesMatch(online: string, packageValue: string, field: string): boolean {
+  if (field === 'Net Quantity') {
+    const onlineQuantity = quantityInBaseUnits(online);
+    const packageQuantity = quantityInBaseUnits(packageValue);
+    if (onlineQuantity !== null && packageQuantity !== null) return Math.abs(onlineQuantity - packageQuantity) < 0.01;
+  }
+  if (field === 'MRP / Retail Sale Price') {
+    const onlinePrice = Number(online.replace(/[^\d.]/g, ''));
+    const packagePrice = Number(packageValue.replace(/[^\d.]/g, ''));
+    if (Number.isFinite(onlinePrice) && Number.isFinite(packagePrice)) return Math.abs(onlinePrice - packagePrice) < 0.01;
+  }
+  return normalizedComparisonValue(online) === normalizedComparisonValue(packageValue);
+}
+
+function extractedValue(declarations: any[], field: string): { value: string | null; evidenceText: string | null } {
+  const declaration = declarations.find(item => item.field === field);
+  return {
+    value: declaration?.present && declaration.value ? String(declaration.value) : null,
+    evidenceText: declaration?.evidence_text ?? null
+  };
+}
+
+function comparisonField(
+  field: string,
+  onlineValue: string | null,
+  packageValue: string | null,
+  evidenceText: string | null
+): SellerComparisonField {
+  if (!packageValue) {
+    return {
+      field,
+      onlineValue,
+      packageValue: null,
+      status: 'NOT_DETECTED',
+      finding: 'Not detected in supplied package image(s); this is not a confirmed legal violation.',
+      evidenceText
+    };
+  }
+  if (!onlineValue) {
+    return {
+      field,
+      onlineValue: null,
+      packageValue,
+      status: 'REVIEW',
+      finding: 'Package value was extracted, but the online listing does not provide a value for comparison.',
+      evidenceText
+    };
+  }
+  const matches = valuesMatch(onlineValue, packageValue, field);
+  return {
+    field,
+    onlineValue,
+    packageValue,
+    status: matches ? 'MATCH' : 'MISMATCH',
+    finding: matches
+      ? 'Package and online listing values match after formatting normalization.'
+      : 'Package and online listing values differ and require review.',
+    evidenceText
+  };
+}
+
+export function comparePackageToSellerListing(
+  listing: SellerListing,
+  declarations: any[]
+): { score: number; status: 'MATCH' | 'MISMATCH' | 'REVIEW'; fields: SellerComparisonField[] } {
+  const packageFields = {
+    product_name: extractedValue(declarations, 'product_name'),
+    net_quantity: extractedValue(declarations, 'net_quantity'),
+    mrp: extractedValue(declarations, 'mrp'),
+    manufacturer: extractedValue(declarations, 'manufacturer'),
+    country_of_origin: extractedValue(declarations, 'country_of_origin'),
+    manufacturing_date: extractedValue(declarations, 'manufacturing_date'),
+    expiry_or_best_before: extractedValue(declarations, 'expiry_or_best_before'),
+    consumer_care: extractedValue(declarations, 'consumer_care')
+  };
+  const fields = [
+    comparisonField('Product / Common Name', listing.productName, packageFields.product_name.value, packageFields.product_name.evidenceText),
+    comparisonField('Net Quantity', listing.netQuantity || null, packageFields.net_quantity.value, packageFields.net_quantity.evidenceText),
+    comparisonField('MRP / Retail Sale Price', listing.listedMrp == null ? null : String(listing.listedMrp), packageFields.mrp.value, packageFields.mrp.evidenceText),
+    comparisonField('Manufacturer / Packer / Importer', listing.manufacturerPackerImporter || null, packageFields.manufacturer.value, packageFields.manufacturer.evidenceText),
+    comparisonField('Country of Origin', listing.countryOfOrigin || null, packageFields.country_of_origin.value, packageFields.country_of_origin.evidenceText),
+    comparisonField('Manufacturing / Packing Date', listing.manufacturingPackingDate || null, packageFields.manufacturing_date.value, packageFields.manufacturing_date.evidenceText),
+    comparisonField('Best Before / Use By', listing.bestBeforeUseBy || null, packageFields.expiry_or_best_before.value, packageFields.expiry_or_best_before.evidenceText),
+    comparisonField('Consumer Care Details', listing.consumerCareDetails || null, packageFields.consumer_care.value, packageFields.consumer_care.evidenceText)
+  ];
+  const mismatchCount = fields.filter(field => field.status === 'MISMATCH').length;
+  const reviewCount = fields.filter(field => field.status === 'REVIEW' || field.status === 'NOT_DETECTED').length;
+  const score = Math.max(0, Math.round(100 - mismatchCount * 20 - reviewCount * 5));
+  return {
+    score,
+    status: mismatchCount > 0 ? 'MISMATCH' : reviewCount > 0 ? 'REVIEW' : 'MATCH',
+    fields
+  };
+}
+
+export async function runSellerPackageListingComparison(
+  listing: SellerListing,
+  images: { file: File; panel: SellerPackageEvidence['panel'] }[]
+): Promise<SellerPackageListingComparison> {
+  const scan = await startScan({
+    images: images.map(image => ({
+      file: image.file,
+      type: image.panel === 'PRINCIPAL' ? 'FRONT' : image.panel === 'BACK' ? 'BACK' : 'STRIP'
+    })),
+    productName: listing.productName,
+    category: listing.category,
+    scanType: 'SELLER'
+  });
+  const backendResult = await getScanResult(scan.scanId);
+  const result = comparePackageToSellerListing(listing, backendResult.declarations ?? []);
+  const { data: storedImages, error: imageError } = await supabase
+    .from('product_images')
+    .select('storage_path, image_type')
+    .eq('product_id', scan.productId)
+    .order('created_at', { ascending: true });
+  if (imageError) throw imageError;
+
+  const evidence = images.map((image, index) => ({
+    panel: image.panel,
+    storagePath: storedImages?.[index]?.storage_path ?? '',
+    fileName: image.file.name
+  }));
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+  const { data, error } = await supabase
+    .from('seller_package_listing_comparisons')
+    .insert({
+      listing_id: listing.id,
+      seller_id: user.id,
+      scan_id: scan.scanId,
+      score: result.score,
+      status: result.status,
+      extracted_declarations: Object.fromEntries((backendResult.declarations ?? []).map((item: any) => [item.field, item.value ?? null])),
+      field_comparisons: result.fields,
+      findings: result.fields.filter(field => field.status !== 'MATCH').map(field => field.finding),
+      package_evidence: evidence
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return {
+    id: data.id,
+    listingId: data.listing_id,
+    sellerId: data.seller_id,
+    comparedAt: data.compared_at,
+    score: data.score,
+    status: data.status,
+    fields: data.field_comparisons ?? [],
+    evidence: data.package_evidence ?? [],
+    scanId: data.scan_id
+  };
+}
 
 // ============================================================
 // SCAN PIPELINE

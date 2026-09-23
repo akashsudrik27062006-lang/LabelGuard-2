@@ -11,6 +11,9 @@ import {
 import './styles.css';
 import { supabase } from './lib/supabase';
 import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolationDecision, updateScanStatus, submitComplaint, listComplaintsReal, getDashboardStats, startComplaintInvestigation, resolveComplaint, getEvidenceImageUrl, getAllEvidenceImages, listNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, startBulkScan, listProductGroups, listVersionsForGroup, compareVersions, compareVersionsDetailed, FIELD_LABELS, listRecommendations, setManufacturerAction, nextVersionLabel, listManufacturerChecks } from './lib/api';
+import SellerListingsPage from './components/seller/SellerListingsPage';
+import SellerListingAuditPage from './components/seller/SellerListingAuditPage';
+import SellerListingComparisonPage from './components/seller/SellerListingComparisonPage';
 type DbProfile = {
   id: string;
   full_name: string;
@@ -2797,6 +2800,9 @@ function AppShell() {
     ],
     seller: [
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
+      { label: 'Listings', path: 'listings', icon: <ClipboardCheck size={17} /> },
+      { label: 'Listing Audit', path: 'listing-audit', icon: <ClipboardCheck size={17} /> },
+      { label: 'Package ↔ Listing Comparison', path: 'listing-comparison', icon: <ArrowLeftRight size={17} /> },
       { label: 'Listing Check', path: 'scan', icon: <Camera size={17} /> },
       { label: 'Bulk Check', path: 'bulk-check', icon: <ClipboardCheck size={17} /> },
       { label: 'Listing History', path: 'history', icon: <HistoryIcon size={17} /> },
@@ -2915,6 +2921,9 @@ function AppShell() {
           {user.role === 'seller' && (
             <>
               <Route index element={<SellerDashboard onNewScan={() => { setScanResult(undefined); nav('/app/scan'); }} />} />
+              <Route path="listings" element={<SellerListingsPage />} />
+              <Route path="listing-audit" element={<SellerListingAuditPage />} />
+              <Route path="listing-comparison" element={<SellerListingComparisonPage />} />
               <Route path="scan" element={scanResult ? (
                 <div className="result">
                   <div className="result-head">
