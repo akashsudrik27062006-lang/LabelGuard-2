@@ -15,6 +15,7 @@ import SellerListingsPage from './components/seller/SellerListingsPage';
 import SellerListingAuditPage from './components/seller/SellerListingAuditPage';
 import SellerListingComparisonPage from './components/seller/SellerListingComparisonPage';
 import SellerBulkListingAuditPage from './components/seller/SellerBulkListingAuditPage';
+import ManufacturerVersionHistoryPage from './components/manufacturer/ManufacturerVersionHistoryPage';
 type DbProfile = {
   id: string;
   full_name: string;
@@ -1460,26 +1461,28 @@ function VersionComparison() {
       <div className="page-title">
         <div>
           <span className="eyebrow">VERSION COMPARISON</span>
-          <h1>{groupName || 'Measure revision progress'}</h1>
+          <h1>Compare Artwork Versions</h1>
           <p>Compare two saved artwork versions of the same product.</p>
         </div>
       </div>
 
-      <section className="panel">
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px' }}>
-          <label style={{ margin: 0 }}>Product
+      <section className="version-comparison-selector panel">
+        <div className="version-comparison-selector-grid">
+          <label>Product
             <select value={productGroup} onChange={e => setProductGroup(e.target.value)}>
-              <option value="">— Select —</option>
+              <option value="">Select a product</option>
               {groups.map(g => <option key={g.productGroup} value={g.productGroup}>{g.name}</option>)}
             </select>
           </label>
-          <label style={{ margin: 0 }}>Earlier version
+          <label>Earlier version
             <select value={verAId} onChange={e => setVerAId(e.target.value)}>
+              <option value="">Select version</option>
               {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel}</option>)}
             </select>
           </label>
-          <label style={{ margin: 0 }}>Later version
+          <label>Later version
             <select value={verBId} onChange={e => setVerBId(e.target.value)}>
+              <option value="">Select version</option>
               {versions.map(v => <option key={v.productId} value={v.productId}>{v.versionLabel}</option>)}
             </select>
           </label>
@@ -1487,32 +1490,33 @@ function VersionComparison() {
       </section>
 
       {loading ? (
-        <section className="panel"><p style={{ padding: '20px' }}>Loading comparison...</p></section>
+        <section className="version-comparison-empty panel"><p>Loading comparison...</p></section>
       ) : a && b ? (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '16px', alignItems: 'center', margin: '18px 0' }}>
-            <div className="panel" style={{ padding: '18px' }}>
+          <div className="version-comparison-hero">
+            <div className="version-summary-card">
               <span className="eyebrow">{aLabel}</span>
-              <p style={{ margin: '8px 0 4px', fontSize: '18px', fontWeight: 700 }}>Score: {a.scan.score ?? 0}/100</p>
-              <p style={{ margin: '4px 0' }}><span className={'badge ' + cls(a.scan.status as Status)}>{(a.scan.status as string)?.replace(/_/g, ' ')}</span></p>
-              <p style={{ margin: '4px 0', fontSize: '13px' }}>Findings: {a.violations.length}</p>
-              <p style={{ margin: '4px 0', fontSize: '12px', color: 'var(--text-muted)' }}>{new Date(a.scan.completed_at ?? a.scan.started_at).toLocaleDateString('en-IN')}</p>
+              <h2>Earlier artwork</h2>
+              <strong className="version-summary-score">{a.scan.score ?? 0}<small>/100</small></strong>
+              <span className={'badge ' + cls(a.scan.status as Status)}>{(a.scan.status as string)?.replace(/_/g, ' ')}</span>
+              <div className="version-summary-meta"><span>Findings</span><b>{a.violations.length}</b></div>
+              <div className="version-summary-meta"><span>Date</span><b>{new Date(a.scan.completed_at ?? a.scan.started_at).toLocaleDateString('en-IN')}</b></div>
             </div>
-            <ArrowLeftRight size={22} color="var(--text-muted)" />
-            <div className="panel" style={{ padding: '18px' }}>
+            <div className="version-comparison-arrow"><ArrowLeftRight size={30} /></div>
+            <div className="version-summary-card later">
               <span className="eyebrow">{bLabel}</span>
-              <p style={{ margin: '8px 0 4px', fontSize: '18px', fontWeight: 700 }}>Score: {b.scan.score ?? 0}/100</p>
-              <p style={{ margin: '4px 0' }}><span className={'badge ' + cls(b.scan.status as Status)}>{(b.scan.status as string)?.replace(/_/g, ' ')}</span></p>
-              <p style={{ margin: '4px 0', fontSize: '13px' }}>Findings: {b.violations.length}</p>
-              <p style={{ margin: '4px 0', fontSize: '12px', color: 'var(--text-muted)' }}>{new Date(b.scan.completed_at ?? b.scan.started_at).toLocaleDateString('en-IN')}</p>
+              <h2>Later artwork</h2>
+              <strong className="version-summary-score">{b.scan.score ?? 0}<small>/100</small></strong>
+              <span className={'badge ' + cls(b.scan.status as Status)}>{(b.scan.status as string)?.replace(/_/g, ' ')}</span>
+              <div className="version-summary-meta"><span>Findings</span><b>{b.violations.length}</b></div>
+              <div className="version-summary-meta"><span>Date</span><b>{new Date(b.scan.completed_at ?? b.scan.started_at).toLocaleDateString('en-IN')}</b></div>
             </div>
           </div>
 
-          <section className="panel">
-            <h2>Score Change</h2>
-            <p style={{ margin: '4px 0' }}>{aLabel}: <b>{a.scan.score ?? 0}/100</b></p>
-            <p style={{ margin: '4px 0' }}>{bLabel}: <b>{b.scan.score ?? 0}/100</b></p>
-            <p style={{ margin: '4px 0' }}>Change: <b style={{ color: scoreDelta < 0 ? 'var(--status-bad)' : 'var(--status-good)' }}>{scoreDelta >= 0 ? '+' : ''}{scoreDelta} points</b></p>
+          <section className="version-score-card panel">
+            <div className="version-section-heading"><div><span className="eyebrow">REVISION IMPACT</span><h2>Score Change</h2></div><strong className={scoreDelta < 0 ? 'negative' : 'positive'}>{scoreDelta >= 0 ? '+' : ''}{scoreDelta} points</strong></div>
+            <div className="version-score-track"><span style={{ width: `${Math.max(0, Math.min(100, b.scan.score ?? 0))}%` }} /></div>
+            <div className="version-score-labels"><span>{aLabel}: <b>{a.scan.score ?? 0}/100</b></span><span>{bLabel}: <b>{b.scan.score ?? 0}/100</b></span></div>
             <p style={{ margin: '4px 0', fontSize: '13px', color: 'var(--text-muted)' }}>Status: {(a.scan.status as string)?.replace(/_/g, ' ')} → {(b.scan.status as string)?.replace(/_/g, ' ')}</p>
           </section>
 
@@ -2759,7 +2763,7 @@ function ManufacturerRoutes({ scanResult, setScanResult, nav }: {
           />
         </>
       )} />
-      <Route path="history" element={<HistoryPage role="manufacturer" />} />
+      <Route path="history" element={<ManufacturerVersionHistoryPage setScanResult={setScanResult} />} />
       <Route path="label-generator" element={<LabelGenerator />} />
     </Routes>
   );
@@ -2797,7 +2801,7 @@ function AppShell() {
       { label: 'Correction Recommendations', path: 'recommendations', icon: <AlertTriangle size={17} /> },
       { label: 'Version Comparison', path: 'version-comparison', icon: <ArrowLeftRight size={17} /> },
       { label: 'Label Generator', path: 'label-generator', icon: <Sparkles size={17} /> },
-      { label: 'Analysis History', path: 'history', icon: <HistoryIcon size={17} /> },
+      { label: 'Version History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
     seller: [
       { label: 'Dashboard', path: '', icon: <LayoutDashboard size={17} /> },
