@@ -78,3 +78,25 @@ export type SellerPackageListingComparison = {
   evidence: SellerPackageEvidence[];
   scanId: string;
 };
+
+export type SellerBulkListingAuditResult = {
+  listingId: string;
+  productName: string;
+  sku: string;
+  marketplace: string;
+  score: number;
+  status: SellerListingAuditStatus;
+  findings: SellerListingAuditFinding[];
+};
+
+export type SellerBulkListingAudit = {
+  id: string;
+  sellerId: string;
+  auditedAt: string;
+  totalListings: number;
+  compliant: number;
+  reviewRequired: number;
+  potentialIssues: number;
+  averageScore: number;
+  results: SellerBulkListingAuditResult[];
+};

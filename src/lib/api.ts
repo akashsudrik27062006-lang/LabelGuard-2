@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { PackageComparisonStatus, SellerComparisonField, SellerListing, SellerListingAudit, SellerListingAuditFinding, SellerListingInput, SellerPackageEvidence, SellerPackageListingComparison } from '../components/seller/sellerTypes';
+import type { PackageComparisonStatus, SellerBulkListingAudit, SellerBulkListingAuditResult, SellerComparisonField, SellerListing, SellerListingAudit, SellerListingAuditFinding, SellerListingInput, SellerPackageEvidence, SellerPackageListingComparison } from '../components/seller/sellerTypes';
 
 function mapSellerListing(row: any): SellerListing {
   return {
@@ -215,6 +215,78 @@ export async function listSellerListingAudits(listingId?: string): Promise<Selle
     status: row.status,
     checkedDeclarations: row.checked_declarations ?? {},
     findings: row.findings ?? [],
+  }));
+}
+
+export async function createSellerBulkListingAudit(
+  listings: SellerListing[]
+): Promise<SellerBulkListingAudit> {
+  if (listings.length === 0) throw new Error('Select at least one listing');
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const results: SellerBulkListingAuditResult[] = listings.map(listing => {
+    const result = runSellerListingAudit(listing);
+    return {
+      listingId: listing.id,
+      productName: listing.productName,
+      sku: listing.sku,
+      marketplace: listing.marketplace,
+      score: result.score,
+      status: result.status,
+      findings: result.findings
+    };
+  });
+  const compliant = results.filter(result => result.status === 'COMPLIANT').length;
+  const reviewRequired = results.filter(result => result.status === 'REVIEW_REQUIRED').length;
+  const potentialIssues = results.filter(result => result.status === 'NON_COMPLIANT').length;
+  const averageScore = results.reduce((sum, result) => sum + result.score, 0) / results.length;
+
+  const { data, error } = await supabase
+    .from('seller_bulk_listing_audits')
+    .insert({
+      seller_id: user.id,
+      total_listings: results.length,
+      compliant,
+      review_required: reviewRequired,
+      potential_issues: potentialIssues,
+      average_score: Number(averageScore.toFixed(2)),
+      listing_ids: listings.map(listing => listing.id),
+      results
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  return {
+    id: data.id,
+    sellerId: data.seller_id,
+    auditedAt: data.audited_at,
+    totalListings: data.total_listings,
+    compliant: data.compliant,
+    reviewRequired: data.review_required,
+    potentialIssues: data.potential_issues,
+    averageScore: Number(data.average_score),
+    results: data.results ?? []
+  };
+}
+
+export async function listSellerBulkListingAudits(): Promise<SellerBulkListingAudit[]> {
+  const { data, error } = await supabase
+    .from('seller_bulk_listing_audits')
+    .select('*')
+    .order('audited_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    sellerId: row.seller_id,
+    auditedAt: row.audited_at,
+    totalListings: row.total_listings,
+    compliant: row.compliant,
+    reviewRequired: row.review_required,
+    potentialIssues: row.potential_issues,
+    averageScore: Number(row.average_score),
+    results: row.results ?? []
   }));
 }
 

@@ -14,6 +14,7 @@ import { startScan, getScanResult, mapToUiResult, listRealScans, updateViolation
 import SellerListingsPage from './components/seller/SellerListingsPage';
 import SellerListingAuditPage from './components/seller/SellerListingAuditPage';
 import SellerListingComparisonPage from './components/seller/SellerListingComparisonPage';
+import SellerBulkListingAuditPage from './components/seller/SellerBulkListingAuditPage';
 type DbProfile = {
   id: string;
   full_name: string;
@@ -2804,7 +2805,7 @@ function AppShell() {
       { label: 'Listing Audit', path: 'listing-audit', icon: <ClipboardCheck size={17} /> },
       { label: 'Package ↔ Listing Comparison', path: 'listing-comparison', icon: <ArrowLeftRight size={17} /> },
       { label: 'Listing Check', path: 'scan', icon: <Camera size={17} /> },
-      { label: 'Bulk Check', path: 'bulk-check', icon: <ClipboardCheck size={17} /> },
+      { label: 'Bulk Listing Audit', path: 'bulk-check', icon: <ClipboardCheck size={17} /> },
       { label: 'Listing History', path: 'history', icon: <HistoryIcon size={17} /> },
     ],
     consumer: [
@@ -2958,7 +2959,7 @@ function AppShell() {
                 </>
               )} />
               <Route path="history" element={<HistoryPage role="seller" />} />
-              <Route path="bulk-check" element={<SellerBulkScan />} />
+              <Route path="bulk-check" element={<SellerBulkListingAuditPage />} />
             </>
           )}
 
