@@ -429,43 +429,96 @@ const IMAGE_SLOTS: { type: 'FRONT' | 'BACK' | 'STRIP'; label: string; hint: stri
   { type: 'STRIP', label: 'Tear-strip / seal', hint: 'Often has MRP, batch info', required: false },
 ];
 
-function Scanner({ done, role, productGroup, versionLabel, lockedProductName }: { done: (r: Result) => void; role: Role; productGroup?: string; versionLabel?: string; lockedProductName?: string }) {
-  const [slots, setSlots] = useState<Record<string, { file: File; preview: string } | undefined>>({});
+function Scanner({
+  done,
+  role,
+  productGroup,
+  versionLabel,
+  lockedProductName
+}: {
+  done: (r: Result) => void;
+  role: Role;
+  productGroup?: string;
+  versionLabel?: string;
+  lockedProductName?: string;
+}) {
+  const [slots, setSlots] = useState<
+    Record<string, { file: File; preview: string } | undefined>
+  >({});
+
   const [productName, setProductName] = useState(lockedProductName ?? '');
   const [isImported, setIsImported] = useState(false);
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
+  // ✅ FIX:
+  // Keep productName state synchronized with lockedProductName.
+  // This is important when moving from V1 → V2 → V3, etc.
+  React.useEffect(() => {
+    setProductName(lockedProductName ?? '');
+  }, [lockedProductName]);
+
   const setSlotFile = (type: string, f: File | undefined) => {
-    setSlots(prev => ({ ...prev, [type]: f ? { file: f, preview: URL.createObjectURL(f) } : undefined }));
+    setSlots(prev => ({
+      ...prev,
+      [type]: f
+        ? {
+            file: f,
+            preview: URL.createObjectURL(f)
+          }
+        : undefined
+    }));
   };
 
   const hasAnyImage = Object.values(slots).some(Boolean);
 
   const analyze = async () => {
-    if (!hasAnyImage) return alert('Please upload at least the front panel image.');
-    if (!productName.trim()) return alert('Please enter a product name.');
+    if (!hasAnyImage) {
+      return alert('Please upload at least the front panel image.');
+    }
+
+    if (!productName.trim()) {
+      return alert('Please enter a product name.');
+    }
+
     setLoading(true);
-    setStatusMsg('Uploading image(s) and running AI analysis (this can take 10-20 seconds)...');
+
+    setStatusMsg(
+      'Uploading image(s) and running AI analysis (this can take 10-20 seconds)...'
+    );
+
     try {
       const images = IMAGE_SLOTS
         .filter(s => slots[s.type])
-        .map(s => ({ file: slots[s.type]!.file, type: s.type }));
+        .map(s => ({
+          file: slots[s.type]!.file,
+          type: s.type
+        }));
 
       const { scanId } = await startScan({
         images,
         productName: productName.trim(),
         category: 'Packaged food',
-        scanType: role.toUpperCase() as 'OFFICER' | 'MANUFACTURER' | 'SELLER' | 'CONSUMER',
+        scanType: role.toUpperCase() as
+          | 'OFFICER'
+          | 'MANUFACTURER'
+          | 'SELLER'
+          | 'CONSUMER',
         isImported,
         productGroup,
         versionLabel
       });
+
       const backendResult = await getScanResult(scanId);
+
       const uiResult = mapToUiResult(backendResult);
+
       done(uiResult as unknown as Result);
     } catch (e) {
-      alert('Scan failed: ' + ((e as Error).message || 'Unknown error'));
+      alert(
+        'Scan failed: ' +
+          ((e as Error).message || 'Unknown error')
+      );
     } finally {
       setLoading(false);
     }
@@ -474,65 +527,162 @@ function Scanner({ done, role, productGroup, versionLabel, lockedProductName }: 
   return (
     <section className="scanner">
       <div className="sample-picker">
+
+        {/* ================= PRODUCT NAME ================= */}
         {lockedProductName ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '560px' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+              width: '100%',
+              maxWidth: '560px'
+            }}
+          >
             <b>Product</b>
-            <div style={{ padding: '12px 14px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-subtle)' }}>
+
+            <div
+              style={{
+                padding: '12px 14px',
+                border: '1px solid var(--border-light)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--bg-subtle)'
+              }}
+            >
               <strong>{lockedProductName}</strong>
             </div>
+
             {versionLabel && (
-              <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+              <span
+                style={{
+                  fontSize: '13px',
+                  color: 'var(--text-muted)'
+                }}
+              >
                 Uploading revised artwork as <b>{versionLabel}</b>
               </span>
             )}
           </div>
         ) : (
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '360px' }}>
+          <label
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+              width: '100%',
+              maxWidth: '360px'
+            }}
+          >
             <b>Product Name</b>
+
             <input
               type="text"
               placeholder="e.g. Amul Ghee 500g"
               value={productName}
               onChange={e => setProductName(e.target.value)}
               disabled={loading}
-              style={{ padding: '10px 12px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}
+              style={{
+                padding: '10px 12px',
+                border: '1px solid var(--border-light)',
+                borderRadius: 'var(--radius-sm)'
+              }}
             />
           </label>
         )}
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontWeight: 500, fontSize: '13px' }}>
-          <input type="checkbox" checked={isImported} onChange={e => setIsImported(e.target.checked)} disabled={loading} style={{ width: 'auto' }} />
-          This product is imported (Country of Origin declaration will be checked)
+
+        {/* ================= IMPORTED PRODUCT ================= */}
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            marginTop: '10px',
+            fontWeight: 500,
+            fontSize: '13px'
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={isImported}
+            onChange={e => setIsImported(e.target.checked)}
+            disabled={loading}
+            style={{ width: 'auto' }}
+          />
+
+          This product is imported (Country of Origin declaration
+          will be checked)
         </label>
+
+        {/* ================= VERSION LABEL ================= */}
         {!lockedProductName && versionLabel && (
           <div style={{ marginTop: '8px' }}>
-            <span className="badge good">Uploading as {versionLabel}</span>
+            <span className="badge good">
+              Uploading as {versionLabel}
+            </span>
           </div>
         )}
       </div>
 
-      <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '4px 0 12px' }}>
-        Many labels split info across panels — add the back and the tear-strip near the seal too for the most accurate result (only Front is required).
+      {/* ================= IMAGE INSTRUCTIONS ================= */}
+      <p
+        style={{
+          fontSize: '13px',
+          color: 'var(--text-muted)',
+          margin: '4px 0 12px'
+        }}
+      >
+        Many labels split info across panels — add the back and
+        the tear-strip near the seal too for the most accurate
+        result (only Front is required).
       </p>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
+      {/* ================= IMAGE UPLOADS ================= */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: '14px'
+        }}
+      >
         {IMAGE_SLOTS.map(slot => {
           const current = slots[slot.type];
+
           return (
-            <label key={slot.type} className="dropzone" style={{ height: '180px' }}>
+            <label
+              key={slot.type}
+              className="dropzone"
+              style={{ height: '180px' }}
+            >
               <input
                 aria-label={`Upload ${slot.label}`}
                 type="file"
                 accept="image/*"
-                onChange={e => setSlotFile(slot.type, e.target.files?.[0])}
+                onChange={e =>
+                  setSlotFile(
+                    slot.type,
+                    e.target.files?.[0]
+                  )
+                }
                 disabled={loading}
               />
+
               {current ? (
-                <img src={current.preview} alt={slot.label + ' preview'} />
+                <img
+                  src={current.preview}
+                  alt={slot.label + ' preview'}
+                />
               ) : (
                 <>
                   <Upload size={22} />
-                  <b style={{ fontSize: '13px' }}>{slot.label}{slot.required ? '' : ' (optional)'}</b>
-                  <span style={{ fontSize: '11px' }}>{slot.hint}</span>
+
+                  <b style={{ fontSize: '13px' }}>
+                    {slot.label}
+                    {slot.required ? '' : ' (optional)'}
+                  </b>
+
+                  <span style={{ fontSize: '11px' }}>
+                    {slot.hint}
+                  </span>
                 </>
               )}
             </label>
@@ -540,27 +690,81 @@ function Scanner({ done, role, productGroup, versionLabel, lockedProductName }: 
         })}
       </div>
 
+      {/* ================= LOADING ================= */}
       {loading && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '24px', background: 'var(--bg-sidebar)', borderRadius: 'var(--radius-md)', marginTop: '16px' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '24px',
+            background: 'var(--bg-sidebar)',
+            borderRadius: 'var(--radius-md)',
+            marginTop: '16px'
+          }}
+        >
           <ScanGauge progress={60} />
-          <b style={{ color: '#fff', fontSize: '14px', textAlign: 'center' }}>{statusMsg}</b>
-          <span style={{ color: '#94a3b8', fontSize: '12px' }}>Evaluating against statutory Legal Metrology rules</span>
+
+          <b
+            style={{
+              color: '#fff',
+              fontSize: '14px',
+              textAlign: 'center'
+            }}
+          >
+            {statusMsg}
+          </b>
+
+          <span
+            style={{
+              color: '#94a3b8',
+              fontSize: '12px'
+            }}
+          >
+            Evaluating against statutory Legal Metrology
+            rules
+          </span>
         </div>
       )}
 
+      {/* ================= ACTION BUTTONS ================= */}
       {hasAnyImage && (
         <div className="scan-actions">
+
           <button
             className="btn outline"
-            onClick={() => IMAGE_SLOTS.forEach(s => setSlotFile(s.type, undefined))}
+            onClick={() =>
+              IMAGE_SLOTS.forEach(s =>
+                setSlotFile(s.type, undefined)
+              )
+            }
             disabled={loading}
           >
             Remove All Images
           </button>
-          <button className="btn primary" onClick={analyze} disabled={loading}>
-            {loading ? <RefreshCw className="spin" size={16} /> : <Camera size={16} />}
-            {loading ? 'Analyzing...' : role === 'consumer' ? 'Check Product' : 'Run Compliance Scan'}
+
+          <button
+            className="btn primary"
+            onClick={analyze}
+            disabled={loading}
+          >
+            {loading ? (
+              <RefreshCw
+                className="spin"
+                size={16}
+              />
+            ) : (
+              <Camera size={16} />
+            )}
+
+            {loading
+              ? 'Analyzing...'
+              : role === 'consumer'
+              ? 'Check Product'
+              : 'Run Compliance Scan'}
           </button>
+
         </div>
       )}
     </section>

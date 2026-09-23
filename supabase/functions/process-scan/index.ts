@@ -80,40 +80,100 @@ Deno.serve(async (req) => {
     // Fetch active rules while Gemini is processing so these operations overlap.
     const rulesPromise = supabase.from('rules').select('*').eq('active', true);
 
-    // Retry temporary Gemini 503 overload errors with exponential backoff.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: geminiPrompt },
-                ...imageParts.map(p => ({ inline_data: { mime_type: p.mime_type, data: p.data } }))
-              ]
-            }],
-            generationConfig: {
-              responseMimeType: 'application/json'
-            }
-          })
+    // Keep the AI stage fast. Do NOT wait 20+ seconds for a 429 retry: that is what
+    // caused the previous version to exceed the requested scan time. Instead, use the
+    // fast Gemini 3.5 Flash-Lite model first and immediately fall back to Gemini 3.8 Flash
+    // if the first model is temporarily unavailable.
+    const GEMINI_DEADLINE_MS = 35000;
+    const geminiStartedAt = Date.now();
+    const GEMINI_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'] as const;
+
+    const fetchGemini = async (model: string, remainingMs: number): Promise<Response> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), Math.max(1000, remainingMs));
+
+      try {
+        return await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: geminiPrompt },
+                  ...imageParts.map(p => ({
+                    inline_data: {
+                      mime_type: p.mime_type,
+                      data: p.data
+                    }
+                  }))
+                ]
+              }],
+              generationConfig: {
+                responseMimeType: 'application/json',
+                maxOutputTokens: 4096
+              }
+            })
+          }
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    let lastStatus = 0;
+    let lastErrorText = '';
+
+    for (const model of GEMINI_MODELS) {
+      const remainingMs = GEMINI_DEADLINE_MS - (Date.now() - geminiStartedAt);
+      if (remainingMs <= 1000) break;
+
+      try {
+        geminiRes = await fetchGemini(model, remainingMs);
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') {
+          break;
         }
-      );
+        throw e;
+      }
 
       if (geminiRes.ok) break;
 
-      // Only retry temporary overloads. Other errors are returned immediately.
-      if (geminiRes.status !== 503) break;
+      lastStatus = geminiRes.status;
+      lastErrorText = await geminiRes.text();
 
-      if (attempt < 2) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+      // 429 = quota/rate limit. Do not sleep for the server's 20-second retry window;
+      // immediately try the second supported model so the normal scan remains fast.
+      if (geminiRes.status === 429 || geminiRes.status === 503) {
+        continue;
       }
+
+      // Authentication, malformed request, etc. should not be hidden by a fallback.
+      break;
     }
 
     if (!geminiRes || !geminiRes.ok) {
-      const errText = geminiRes ? await geminiRes.text() : 'No response from Gemini API';
-      throw new Error(`Gemini API error (${geminiRes?.status ?? 'unknown'}): ${errText}`);
+      const errText = geminiRes
+        ? await geminiRes.text()
+        : 'No response from Gemini API';
+
+      if (geminiRes?.status === 429 || lastStatus === 429) {
+        throw new Error(
+          'Gemini API quota is currently exhausted for the available models. No retry delay was added, so the scan stays within the 30-40 second target. Please wait for the Gemini quota to reset or use a project with available quota.'
+        );
+      }
+
+      if (geminiRes?.status === 503 || lastStatus === 503) {
+        throw new Error(
+          'Gemini is temporarily overloaded on the available models. Please try the scan again.'
+        );
+      }
+
+      throw new Error(
+        `Gemini API error (${geminiRes?.status ?? (lastStatus || 'unknown')}): ${errText || lastErrorText}`
+      );
     }
 
     const geminiData = await geminiRes.json();
